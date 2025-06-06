@@ -1,11 +1,62 @@
 
 'use server';
 
-import type { ShopifyOrder, ShopifyOrderCacheItem, ShopifyOrderSyncState } from '@/lib/types';
+import type { ShopifyOrder, ShopifyOrderCacheItem, ShopifyOrderSyncState, ShopifyTransaction } from '@/lib/types';
 import { getAdminDb } from '@/lib/firebase-admin';
 import { Timestamp } from 'firebase-admin/firestore';
 
-// GraphQL API Response Structures (simplified for brevity, ensure they match actual responses)
+// GraphQL API Response Structures
+interface ShopifyGraphQLImageNode {
+  id?: string;
+  url: string;
+  altText?: string | null;
+}
+
+interface ShopifyGraphQLImageEdge {
+  node: ShopifyGraphQLImageNode;
+}
+
+interface ShopifyGraphQLMoneyV2 {
+  amount: string;
+  currencyCode: string;
+}
+
+interface ShopifyGraphQLInventoryItemNode {
+  id: string;
+  sku?: string | null;
+  unitCost?: ShopifyGraphQLMoneyV2 | null;
+}
+
+interface ShopifyGraphQLSelectedOption {
+    name: string;
+    value: string;
+}
+
+interface ShopifyGraphQLVariantNode {
+  id: string;
+  sku?: string | null;
+  price: string;
+  inventoryQuantity?: number | null;
+  updatedAt: string;
+  image?: ShopifyGraphQLImageNode | null;
+  selectedOptions: ShopifyGraphQLSelectedOption[];
+  inventoryItem: ShopifyGraphQLInventoryItemNode;
+}
+
+interface ShopifyGraphQLVariantEdge {
+  node: ShopifyGraphQLVariantNode;
+}
+
+interface ShopifyGraphQLTransactionNode { // This is what a single transaction from the list will look like
+  id: string;
+  kind: string;
+  status: string;
+  amountSet: { shopMoney: { amount: string; currencyCode: string } }; // Matches ShopifyMoneySet
+  gateway?: string | null;
+  processedAt?: string;
+  errorCode?: string | null;
+}
+
 interface ShopifyGraphQLOrderNode {
   id: string;
   name: string;
@@ -53,23 +104,7 @@ interface ShopifyGraphQLOrderNode {
         endCursor?: string | null;
     };
   };
-  transactions?: {
-    edges: Array<{
-      node: {
-        id: string;
-        kind: string;
-        status: string;
-        amountSet: { shopMoney: { amount: string; currencyCode: string } };
-        gateway?: string | null;
-        processedAt?: string;
-        errorCode?: string | null;
-      };
-    }>;
-    pageInfo: {
-        hasNextPage: boolean;
-        endCursor?: string | null;
-    };
-  };
+  transactions?: ShopifyGraphQLTransactionNode[]; // Changed: Now a direct list
 }
 
 interface ShopifyGraphQLOrderEdge {
@@ -92,7 +127,7 @@ interface ShopifyGraphQLOrdersResponse {
 
 const ORDER_SYNC_STATE_DOC_ID = 'shopifyOrdersSyncState';
 const SHOPIFY_ORDER_CACHE_COLLECTION = 'shopifyOrderCache';
-const DEFAULT_ORDERS_PER_PAGE = 25; // Shopify allows up to 250, but smaller pages are safer for timeouts
+const DEFAULT_ORDERS_PER_PAGE = 25;
 
 async function getShopifyOrderSyncState(): Promise<ShopifyOrderSyncState | null> {
   const adminDb = getAdminDb();
@@ -183,7 +218,7 @@ export async function fetchAndCacheShopifyOrders({
   }
   const currentSyncOperationStartedAt = new Date().toISOString();
 
-  // GraphQL query for orders (simplified, expand as needed)
+  // GraphQL query for orders
   const ordersQuery = `
     query GetOrders($first: Int!, $after: String, $sortKey: OrderSortKeys, $reverse: Boolean, $query: String) {
       orders(first: $first, after: $after, sortKey: $sortKey, reverse: $reverse, query: $query) {
@@ -210,7 +245,7 @@ export async function fetchAndCacheShopifyOrders({
             totalTaxSet { shopMoney { amount currencyCode } }
             totalDiscountsSet { shopMoney { amount currencyCode } }
             totalRefundedSet { shopMoney { amount currencyCode } }
-            lineItems(first: 20) { # Fetch more line items
+            lineItems(first: 20) {
               edges {
                 node {
                   id
@@ -223,21 +258,16 @@ export async function fetchAndCacheShopifyOrders({
                   discountedTotalSet { shopMoney { amount currencyCode } }
                 }
               }
-              pageInfo { hasNextPage endCursor } # For future per-order line item pagination
+              pageInfo { hasNextPage endCursor }
             }
-            transactions(first: 5) { # Fetch some transactions
-              edges {
-                node {
-                  id
-                  kind
-                  status
-                  amountSet { shopMoney { amount currencyCode } }
-                  gateway
-                  processedAt
-                  errorCode
-                }
-              }
-               pageInfo { hasNextPage endCursor }
+            transactions(first: 5) { # Corrected: transactions is a list
+              id
+              kind
+              status
+              amountSet { shopMoney { amount currencyCode } }
+              gateway
+              processedAt
+              errorCode
             }
           }
         }
@@ -256,7 +286,7 @@ export async function fetchAndCacheShopifyOrders({
         first: limit > 0 && limit < DEFAULT_ORDERS_PER_PAGE ? limit - allFetchedOrders.length : DEFAULT_ORDERS_PER_PAGE,
         after: currentCursor,
         sortKey: "UPDATED_AT",
-        reverse: false, // Fetch oldest first to process chronologically for delta logic
+        reverse: false, 
         query: queryFilter,
       };
 
@@ -298,7 +328,7 @@ export async function fetchAndCacheShopifyOrders({
           customer: orderNode.customer || undefined,
           billingAddress: orderNode.billingAddress || undefined,
           shippingAddress: orderNode.shippingAddress || undefined,
-          lineItems: { // Ensure lineItems is structured correctly
+          lineItems: { 
             edges: orderNode.lineItems.edges.map(liEdge => ({
               node: {
                 ...liEdge.node,
@@ -307,9 +337,16 @@ export async function fetchAndCacheShopifyOrders({
               }
             }))
           },
-          transactions: orderNode.transactions ? { // Handle optional transactions
-             edges: orderNode.transactions.edges.map(txEdge => ({ node: txEdge.node }))
-          } : undefined,
+          // Correctly map transactions if it's a direct list
+          transactions: orderNode.transactions?.map(tx => ({
+            id: tx.id,
+            kind: tx.kind,
+            status: tx.status,
+            amountSet: tx.amountSet, // Assuming ShopifyMoneySet type matches
+            gateway: tx.gateway,
+            processedAt: tx.processedAt,
+            errorCode: tx.errorCode,
+          } as ShopifyTransaction)) || undefined,
         };
         allFetchedOrders.push(shopifyOrder);
       });
@@ -325,10 +362,10 @@ export async function fetchAndCacheShopifyOrders({
 
     // Update sync state
     const newSyncStateUpdate: Partial<ShopifyOrderSyncState> = {
-      lastOrderSyncTimestamp: currentSyncOperationStartedAt, // Timestamp of this sync operation start
-      lastOrderEndCursor: currentCursor, // Store the last cursor reached
+      lastOrderSyncTimestamp: currentSyncOperationStartedAt, 
+      lastOrderEndCursor: currentCursor, 
     };
-    if (effectiveSyncType === 'full' && !hasNextPage) { // Only update full sync completion if all pages were fetched
+    if (effectiveSyncType === 'full' && !hasNextPage) { 
       newSyncStateUpdate.lastFullOrderSyncCompletionTimestamp = new Date().toISOString();
     }
     await updateShopifyOrderSyncState(newSyncStateUpdate);
@@ -421,6 +458,5 @@ export async function getCachedShopifyOrders(): Promise<ShopifyOrderCacheItem[]>
         return [];
     }
 }
-
 
     

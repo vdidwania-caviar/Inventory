@@ -338,7 +338,7 @@ export interface ShopifyOrderLineItemEdge {
   node: ShopifyOrderLineItemNode;
 }
 
-export interface ShopifyOrderTransactionNode {
+export interface ShopifyTransaction { // Renamed from ShopifyOrderTransactionNode
   id: string;
   kind: string;
   status: string;
@@ -346,10 +346,6 @@ export interface ShopifyOrderTransactionNode {
   gateway?: string | null;
   processedAt?: string; // ISO Date string
   errorCode?: string | null;
-}
-
-export interface ShopifyOrderTransactionEdge {
-  node: ShopifyOrderTransactionNode;
 }
 
 export interface ShopifyOrder {
@@ -382,13 +378,7 @@ export interface ShopifyOrder {
         endCursor?: string | null;
     };
   };
-  transactions?: {
-    edges: ShopifyOrderTransactionEdge[];
-     pageInfo?: {
-        hasNextPage: boolean;
-        endCursor?: string | null;
-    };
-  };
+  transactions?: ShopifyTransaction[]; // Changed from object with edges to direct array
 }
 
 // For storing in Firestore cache. Firestore document ID will be the numeric part of shopifyOrder.id.
@@ -404,3 +394,5 @@ export interface ShopifyOrderSyncState {
   lastOrderSyncTimestamp?: string | null; // Timestamp of the last successfully synced order's update/creation
   lastFullOrderSyncCompletionTimestamp?: string | null; // Timestamp of the last full sync completion
 }
+
+    
