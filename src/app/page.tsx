@@ -1,28 +1,19 @@
-
 import { OverviewCard } from '@/components/dashboard/overview-card';
 import { SalesSummaryChart } from '@/components/dashboard/sales-summary-chart';
-import { initialInventoryItems, mockSales, salesSummaryChartData } from '@/lib/mock-data'; // Keep mockSales for "Recent Sales" for now
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Badge } from '@/components/ui/badge';
-import { Download, Upload, Package, DollarSign, TrendingUp, CalendarCheck, LineChart, AlertTriangle } from 'lucide-react';
+import { Download, Upload, Package, DollarSign, LineChart, CalendarCheck, AlertTriangle } from 'lucide-react';
 import Link from 'next/link';
-import Image from 'next/image';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-
 import { getAdminDb } from '@/lib/firebase-admin';
 import type { InventoryItem, Sale, InventoryMetric } from '@/lib/types';
 import { Timestamp as AdminTimestamp } from 'firebase-admin/firestore';
 import { format, getYear, getMonth, startOfMonth, endOfMonth, startOfYear, endOfYear, isValid, parseISO } from 'date-fns';
 
-// Helper function to format currency
+// --- Utility Functions ---
 function formatCurrencyForDisplay(amount?: number): string {
   if (typeof amount !== 'number' || isNaN(amount)) return '$0.00';
   return `$${amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
-
-// Helper function to parse numeric values robustly
 function parseNumeric(value: any): number | undefined {
   if (value === undefined || value === null || String(value).trim() === '') return undefined;
   if (typeof value === 'number' && !isNaN(value)) return value;
@@ -34,23 +25,39 @@ function parseNumeric(value: any): number | undefined {
   }
   return undefined;
 }
-
-// Helper to safely parse date strings or Timestamps from Firestore
-function safeParseDate(dateInput?: string | AdminTimestamp | { _seconds: number; _nanoseconds: number }): Date | null {
+function safeParseDate(
+  dateInput?: string | AdminTimestamp | { _seconds: number; _nanoseconds: number }
+): Date | null {
   if (!dateInput) return null;
   try {
     if (dateInput instanceof AdminTimestamp) {
       return dateInput.toDate();
     }
-    if (typeof dateInput === 'string') {
-      const parsed = parseISO(dateInput);
-      return isValid(parsed) ? parsed : null;
+    if (
+      typeof dateInput === 'object' &&
+      '_seconds' in dateInput &&
+      typeof dateInput._seconds === 'number'
+    ) {
+      return new Date(dateInput._seconds * 1000);
     }
-    if (typeof dateInput === 'object' && '_seconds' in dateInput && typeof dateInput._seconds === 'number') {
-        return new Date(dateInput._seconds * 1000);
+    if (typeof dateInput === 'string') {
+      let parsed = parseISO(dateInput);
+      if (isValid(parsed)) return parsed;
+      const match = dateInput.match(
+        /^([A-Za-z]+ \d{1,2}, \d{4}) at (\d{1,2}:\d{2}:\d{2} (?:AM|PM)) UTC([+-]?\d+)?$/
+      );
+      if (match) {
+        const [_, datePart, timePart, offset] = match;
+        const dateString = `${datePart} ${timePart} GMT${offset || ''}`;
+        const asDate = new Date(dateString);
+        if (isValid(asDate)) return asDate;
+      }
+      parsed = new Date(dateInput);
+      if (isValid(parsed)) return parsed;
     }
     return null;
-  } catch {
+  } catch (err) {
+    console.error('Date parse failed:', dateInput, err);
     return null;
   }
 }
@@ -63,9 +70,22 @@ export default async function DashboardPage() {
   let totalCurrentMonthRevenue = 0;
   let dataFetchingError: string | null = null;
 
+  // --- Sales Summary Chart Data ---
   const now = new Date();
   const currentYear = getYear(now);
   const currentMonth = getMonth(now); // 0-indexed
+
+  // 7 months: [oldest,...,current]
+  const chartMonths: { year: number; month: number; label: string }[] = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    chartMonths.push({
+      year: d.getFullYear(),
+      month: d.getMonth(),
+      label: format(d, 'MMM'),
+    });
+  }
+  const chartData: number[] = Array(chartMonths.length).fill(0);
 
   const currentMonthStart = startOfMonth(now);
   const currentMonthEnd = endOfMonth(now);
@@ -75,7 +95,7 @@ export default async function DashboardPage() {
   try {
     const adminDb = getAdminDb();
 
-    // Fetch Inventory Data
+    // --- Inventory Data ---
     const inventorySnapshot = await adminDb.collection('inventory').get();
     inventorySnapshot.forEach(doc => {
       const item = doc.data() as Omit<InventoryItem, 'id'>;
@@ -86,26 +106,34 @@ export default async function DashboardPage() {
       }
     });
 
-    // Fetch Sales Data
+    // --- Sales Data ---
     const salesSnapshot = await adminDb.collection('sales').get();
     salesSnapshot.forEach(doc => {
       const sale = doc.data() as Sale;
       const saleRevenue = parseNumeric(sale.Revenue || sale.Price);
-      
-      if (typeof saleRevenue === 'number') {
-        const saleDate = safeParseDate(sale.Date as any);
-        
-        if (saleDate && isValid(saleDate)) {
-          if (saleDate >= currentYearStart && saleDate <= currentYearEnd) {
-            totalYTDRevenue += saleRevenue;
+      const saleDate = safeParseDate(sale.Date as any);
+
+      if (typeof saleRevenue === 'number' && saleDate && isValid(saleDate)) {
+        // CHART: Find the correct index for the sale's month/year
+        for (let i = 0; i < chartMonths.length; i++) {
+          if (
+            getYear(saleDate) === chartMonths[i].year &&
+            getMonth(saleDate) === chartMonths[i].month
+          ) {
+            chartData[i] += saleRevenue;
+            break;
           }
-          if (saleDate >= currentMonthStart && saleDate <= currentMonthEnd) {
-            totalCurrentMonthRevenue += saleRevenue;
-          }
+        }
+        // -- Year-To-Date Revenue --
+        if (saleDate >= currentYearStart && saleDate <= currentYearEnd) {
+          totalYTDRevenue += saleRevenue;
+        }
+        // -- This Month Revenue --
+        if (saleDate >= currentMonthStart && saleDate <= currentMonthEnd) {
+          totalCurrentMonthRevenue += saleRevenue;
         }
       }
     });
-
   } catch (error: any) {
     console.warn("DashboardPage: Error fetching data:", error.message, "Code:", error.code);
     dataFetchingError = `Failed to load dashboard data. Firestore error: ${error.message} (Code: ${error.code}). Please check Firestore setup and permissions.`;
@@ -119,9 +147,11 @@ export default async function DashboardPage() {
     { title: 'Revenue (This Month)', value: formatCurrencyForDisplay(totalCurrentMonthRevenue), icon: CalendarCheck, description: `Total revenue in ${format(now, 'MMMM yyyy')}.` },
   ];
 
-  // Recent Sales (still using mock for simplicity in this step)
-  const recentSales = mockSales.slice(0, 5);
-  const lowStockItems = initialInventoryItems.filter(item => item.status === 'Active' && item.quantity < 3 && item.quantity > 0).slice(0,3);
+  // Log chart data in the correct structure
+  console.log("DASHBOARD CHART DATA", chartMonths.map((m, idx) => ({
+    name: m.label,
+    totalSales: chartData[idx],
+  })));
 
   return (
     <div className="space-y-6">
@@ -155,87 +185,20 @@ export default async function DashboardPage() {
         ))}
       </div>
 
-      <div className="grid gap-6 md:grid-cols-2">
-        <SalesSummaryChart data={salesSummaryChartData} />
-        
-        <Card className="shadow-lg">
-          <CardHeader>
-            <CardTitle className="font-headline">Recent Sales</CardTitle>
-            <CardDescription>Top 5 most recent sales transactions (mock data).</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Product(s)</TableHead>
-                  <TableHead>Customer ID</TableHead>
-                  <TableHead className="text-right">Amount</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {recentSales.map((sale) => (
-                  <TableRow key={sale.id}>
-                    <TableCell className="font-medium">
-                      {sale.items.map(item => item.name).join(', ')} ({sale.items.reduce((acc, item) => acc + item.quantity, 0)} items)
-                    </TableCell>
-                    <TableCell>{sale.customerId || 'N/A'}</TableCell>
-                    <TableCell className="text-right">${sale.totalAmount.toFixed(2)}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-             <Button variant="link" asChild className="mt-4 px-0">
-              <Link href="/sales">View All Sales</Link>
-            </Button>
-          </CardContent>
-        </Card>
+      {/* --- SALES SUMMARY CHART --- */}
+      <div className="grid gap-6 md:grid-cols-1">
+        <SalesSummaryChart
+          data={chartMonths.map((m, idx) => ({
+            name: m.label,
+            totalSales: chartData[idx],  // This is the important fix!
+          }))}
+        />
+        {chartData.every(val => val === 0) && (
+          <div className="text-center text-gray-400 py-10">
+            No sales data found for the last 7 months.
+          </div>
+        )}
       </div>
-      
-      <Card className="shadow-lg">
-        <CardHeader>
-          <CardTitle className="font-headline">Low Stock Alerts</CardTitle>
-          <CardDescription>Inventory items that are running low on stock (mock data).</CardDescription>
-        </CardHeader>
-        <CardContent>
-          {lowStockItems.length > 0 ? (
-            <div className="grid gap-4 md:grid-cols-3">
-              {lowStockItems.map(item => (
-                <Card key={item.id} className="flex flex-col">
-                  <CardHeader className="p-4 flex-row items-center gap-4">
-                     {item.images && item.images.length > 0 && (
-                        <Image 
-                            src={item.images[0]} 
-                            alt={item.productTitle} 
-                            width={60} 
-                            height={60} 
-                            className="rounded-md object-cover"
-                            data-ai-hint={item.dataAiHint || 'product image'}
-                        />
-                    )}
-                    <div>
-                        <CardTitle className="text-base">{item.productTitle}</CardTitle>
-                        <CardDescription>SKU: {item.sku}</CardDescription>
-                    </div>
-                  </CardHeader>
-                  <CardContent className="p-4 pt-0">
-                    <Badge variant={item.quantity < 2 ? "destructive" : "secondary"}>
-                        Stock: {item.quantity}
-                    </Badge>
-                     <Button size="sm" variant="outline" className="mt-2 w-full" asChild>
-                        <Link href={`/inventory#${item.id}`}>View Details</Link>
-                    </Button>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
-          ) : (
-            <p className="text-muted-foreground">No items are currently low on stock based on mock data.</p>
-          )}
-          <Button variant="link" asChild className="mt-4 px-0">
-            <Link href="/inventory">Manage Inventory</Link>
-          </Button>
-        </CardContent>
-      </Card>
     </div>
   );
 }

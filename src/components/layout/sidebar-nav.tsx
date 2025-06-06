@@ -30,6 +30,7 @@ const navItems: NavItem[] = [
   { title: 'Dashboard', href: '/', icon: LayoutDashboard },
   { title: 'Inventory', href: '/inventory', icon: Package },
   { title: 'Sales', href: '/sales', icon: ShoppingCart },
+  { title: 'Shopify Sales', href: '/shopify-sales', icon: Store }, // New Item
   { title: 'Invoices', href: '/invoices', icon: FileSpreadsheet },
   { title: 'Purchase Orders', href: '/purchase-orders', icon: Truck },
   { title: 'Purchases', href: '/purchases', icon: ShoppingBag },
@@ -38,7 +39,7 @@ const navItems: NavItem[] = [
   { title: 'Customers', href: '/customers', icon: Users },
   { title: 'Vendors', href: '/vendors', icon: Building },
   { title: 'Receipts', href: '/receipts', icon: FileText },
-  { title: 'Shopify', href: '/shopify', icon: Store },
+  { title: 'Shopify Products', href: '/shopify', icon: Store }, // Original Shopify page, renamed for clarity
   { title: 'AI Insights', href: '/ai-insights', icon: Lightbulb },
 ];
 

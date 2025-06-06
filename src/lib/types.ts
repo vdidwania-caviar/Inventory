@@ -216,7 +216,7 @@ export interface SyncSummary {
   detailedChanges?: string[];
 }
 
-export interface ShopifySyncState {
+export interface ShopifySyncState { // Used for products
   id?: string;
   lastEndCursor?: string | null;
   lastSyncTimestamp?: string | null;
@@ -287,4 +287,120 @@ export interface Invoice {
   // billingAddress?: string;
   createdAt: string; // ISO Date string
   updatedAt: string; // ISO Date string
+}
+
+
+// --- Shopify Order Specific Types ---
+export interface ShopifyMoneySet {
+  shopMoney: {
+    amount: string;
+    currencyCode: string;
+  };
+  presentmentMoney?: {
+    amount: string;
+    currencyCode: string;
+  };
+}
+
+export interface ShopifyAddress {
+  firstName?: string | null;
+  lastName?: string | null;
+  address1?: string | null;
+  address2?: string | null;
+  city?: string | null;
+  provinceCode?: string | null;
+  countryCode?: string | null;
+  zip?: string | null;
+  phone?: string | null;
+  company?: string | null;
+}
+
+export interface ShopifyOrderCustomer {
+  id: string;
+  firstName?: string | null;
+  lastName?: string | null;
+  email?: string | null;
+  phone?: string | null;
+}
+
+export interface ShopifyOrderLineItemNode {
+  id: string;
+  title: string;
+  variantTitle?: string | null;
+  quantity: number;
+  sku?: string | null;
+  vendor?: string | null;
+  originalTotalSet?: ShopifyMoneySet;
+  discountedTotalSet?: ShopifyMoneySet;
+}
+
+export interface ShopifyOrderLineItemEdge {
+  node: ShopifyOrderLineItemNode;
+}
+
+export interface ShopifyOrderTransactionNode {
+  id: string;
+  kind: string;
+  status: string;
+  amountSet: ShopifyMoneySet;
+  gateway?: string | null;
+  processedAt?: string; // ISO Date string
+  errorCode?: string | null;
+}
+
+export interface ShopifyOrderTransactionEdge {
+  node: ShopifyOrderTransactionNode;
+}
+
+export interface ShopifyOrder {
+  id: string; // Shopify Order GID, e.g., "gid://shopify/Order/12345"
+  name: string; // Order name/number like #1001
+  email?: string | null;
+  phone?: string | null;
+  createdAt: string; // ISO Date string
+  processedAt?: string | null; // ISO Date string
+  updatedAt: string; // ISO Date string
+  note?: string | null;
+  tags?: string[];
+  poNumber?: string | null;
+  displayFinancialStatus?: string | null;
+  displayFulfillmentStatus?: string | null;
+  customer?: ShopifyOrderCustomer | null;
+  billingAddress?: ShopifyAddress | null;
+  shippingAddress?: ShopifyAddress | null;
+  currencyCode: string;
+  totalPriceSet: ShopifyMoneySet;
+  subtotalPriceSet?: ShopifyMoneySet | null;
+  totalShippingPriceSet?: ShopifyMoneySet | null;
+  totalTaxSet?: ShopifyMoneySet | null;
+  totalDiscountsSet?: ShopifyMoneySet | null;
+  totalRefundedSet?: ShopifyMoneySet | null; // Added from user spec
+  lineItems: {
+    edges: ShopifyOrderLineItemEdge[];
+    pageInfo?: { // Added for potential future pagination handling directly in type
+        hasNextPage: boolean;
+        endCursor?: string | null;
+    };
+  };
+  transactions?: {
+    edges: ShopifyOrderTransactionEdge[];
+     pageInfo?: {
+        hasNextPage: boolean;
+        endCursor?: string | null;
+    };
+  };
+}
+
+// For storing in Firestore cache. Firestore document ID will be the numeric part of shopifyOrder.id.
+export interface ShopifyOrderCacheItem extends ShopifyOrder {
+  // No extra fields needed for now; can store ShopifyOrder structure.
+  // Timestamps are already strings. Nested objects are fine for Firestore.
+}
+
+// Sync state for Shopify Orders (similar to products)
+export interface ShopifyOrderSyncState {
+  id?: string; // Should be a fixed ID like 'shopifyOrdersSyncState'
+  lastOrderEndCursor?: string | null;
+  lastOrderSyncTimestamp?: string | null; // Timestamp of the last successfully synced order's update/creation
+  lastFullOrderSyncCompletionTimestamp?: string | null; // Timestamp of the last full sync completion
 }
