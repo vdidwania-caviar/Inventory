@@ -2,7 +2,7 @@
 'use server';
 
 import type { ShopifyOrder, ShopifyOrderCacheItem, ShopifyOrderSyncState } from '@/lib/types';
-import { adminDb } from '@/lib/firebase-admin';
+import { getAdminDb } from '@/lib/firebase-admin';
 import { Timestamp } from 'firebase-admin/firestore';
 
 // GraphQL API Response Structures (simplified for brevity, ensure they match actual responses)
@@ -95,6 +95,7 @@ const SHOPIFY_ORDER_CACHE_COLLECTION = 'shopifyOrderCache';
 const DEFAULT_ORDERS_PER_PAGE = 25; // Shopify allows up to 250, but smaller pages are safer for timeouts
 
 async function getShopifyOrderSyncState(): Promise<ShopifyOrderSyncState | null> {
+  const adminDb = getAdminDb();
   try {
     const syncStateRef = adminDb.collection('syncState').doc(ORDER_SYNC_STATE_DOC_ID);
     const docSnap = await syncStateRef.get();
@@ -118,6 +119,7 @@ async function getShopifyOrderSyncState(): Promise<ShopifyOrderSyncState | null>
 }
 
 async function updateShopifyOrderSyncState(newState: Partial<ShopifyOrderSyncState>): Promise<void> {
+  const adminDb = getAdminDb();
   try {
     const syncStateRef = adminDb.collection('syncState').doc(ORDER_SYNC_STATE_DOC_ID);
     const updateData: { [key: string]: any } = { ...newState };
@@ -358,6 +360,7 @@ export async function updateShopifyOrderCacheInFirestore(
   orders: ShopifyOrderCacheItem[],
   isFullSync: boolean
 ): Promise<{ countAddedOrUpdated: number; countDeleted: number }> {
+  const adminDb = getAdminDb();
   const cacheCollectionRef = adminDb.collection(SHOPIFY_ORDER_CACHE_COLLECTION);
   let countAddedOrUpdated = 0;
   let countDeleted = 0;
@@ -409,6 +412,7 @@ export async function updateShopifyOrderCacheInFirestore(
 }
 
 export async function getCachedShopifyOrders(): Promise<ShopifyOrderCacheItem[]> {
+    const adminDb = getAdminDb();
     try {
         const snapshot = await adminDb.collection(SHOPIFY_ORDER_CACHE_COLLECTION).orderBy('createdAt', 'desc').limit(250).get(); // Simple sort for now
         return snapshot.docs.map(doc => doc.data() as ShopifyOrderCacheItem);
@@ -417,3 +421,6 @@ export async function getCachedShopifyOrders(): Promise<ShopifyOrderCacheItem[]>
         return [];
     }
 }
+
+
+    
