@@ -16,7 +16,6 @@ import { collection, getDocs, doc, getDoc, Timestamp as ClientTimestamp } from '
 import { fetchShopifyProducts, updateShopifyProductCacheInFirestore } from '@/lib/shopify-service';
 import { isValid } from 'date-fns';
 import { useAuth } from '@/hooks/use-auth'; // Use your hook
-import { cookies } from 'next/headers'; // This is a server-side import, cannot be used in 'use client' component.
 // We will remove the server-side cookie check from here and rely on the useAuth hook.
 
 const SHOPIFY_PRODUCT_CACHE_COLLECTION = 'shopifyProductCache';
@@ -291,3 +290,5 @@ export default function ShopifyProductsPage() { // Renamed component for clarity
     </div>
   );
 }
+
+    
