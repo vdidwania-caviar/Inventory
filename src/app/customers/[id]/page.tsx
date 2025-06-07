@@ -2,16 +2,18 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import { CustomerDetails } from '@/components/customers/customer-details';
 import { getSalesByCustomerId } from '@/lib/customers-data';
 import { useAuth } from '@/hooks/use-auth';
 import type { Customer, Sale } from '@/lib/types';
-import { Loader2, AlertTriangle, UserX } from 'lucide-react';
+import { Loader2, AlertTriangle, UserX, ArrowLeft } from 'lucide-react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
 
 export default function CustomerDetailPage() {
   const params = useParams();
+  const router = useRouter();
   const customerId = params.id as string; // This is the customer_ID, e.g., "C0001"
   const { user, loading: authLoading } = useAuth();
 
@@ -85,20 +87,35 @@ export default function CustomerDetailPage() {
 
   if (error) {
     return (
-      <Alert variant="destructive" className="my-4">
-        <UserX className="h-4 w-4" />
-        <AlertTitle>Could Not Load Customer Details</AlertTitle>
-        <AlertDescription>{error}</AlertDescription>
-      </Alert>
+      <div className="space-y-4">
+        <Button variant="outline" onClick={() => router.push('/customers')} className="mb-2">
+          <ArrowLeft className="mr-2 h-4 w-4" /> Back to Customers
+        </Button>
+        <Alert variant="destructive" className="my-4">
+          <UserX className="h-4 w-4" />
+          <AlertTitle>Could Not Load Customer Details</AlertTitle>
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      </div>
     );
   }
   
   if (!customer) {
-      return null;
+      return (
+         <div className="space-y-4">
+            <Button variant="outline" onClick={() => router.push('/customers')} className="mb-2">
+                <ArrowLeft className="mr-2 h-4 w-4" /> Back to Customers
+            </Button>
+            <p>Customer data could not be loaded.</p>
+         </div>
+      );
   }
 
   return (
     <div className="space-y-6">
+      <Button variant="outline" onClick={() => router.push('/customers')} className="mb-2">
+        <ArrowLeft className="mr-2 h-4 w-4" /> Back to Customers
+      </Button>
       <CustomerDetails customer={customer} sales={sales} />
     </div>
   );
