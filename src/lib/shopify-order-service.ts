@@ -241,15 +241,27 @@ export async function fetchAndCacheShopifyOrders({
         }
 
         // Refined Invoice Number Formatting
-        let tempOrderName = shopifyOrder.name;
-        // Remove potential "SH-" prefix if Shopify order.name already includes it (e.g., from manual entry or other systems)
-        if (tempOrderName.toUpperCase().startsWith('SH-')) {
-            tempOrderName = tempOrderName.substring(3);
+        let coreOrderNumber = shopifyOrder.name;
+
+        // 1. Remove potential "SH-" prefix if it was already part of the Shopify order name
+        if (coreOrderNumber.toUpperCase().startsWith('SH-')) {
+            coreOrderNumber = coreOrderNumber.substring(3);
         }
-        // Remove common prefixes like "X. ", "X-", "X_ ", or "#"
-        // This regex targets: one or more digits, followed by a dot/hyphen/underscore/space, then optional more spaces OR just a leading hash.
-        tempOrderName = tempOrderName.replace(/^[0-9]+[.\-_ ]\s*|^#/, '');
-        const coreOrderNumber = tempOrderName; // The remainder should be the core number
+
+        // 2. Remove "number." or "number-" style prefixes (e.g., "2. ", "1-")
+        coreOrderNumber = coreOrderNumber.replace(/^[0-9]+[.\-_]\s*/, '');
+        
+        // 3. Remove common textual prefixes (case-insensitive for "Order" and leading "#")
+        coreOrderNumber = coreOrderNumber.replace(/^(order\s*#|order\s*|#)/i, '');
+        
+        // Trim any leading/trailing whitespace
+        coreOrderNumber = coreOrderNumber.trim();
+
+        // 4. Specific rule for 5-digit numbers starting with '2' (after other cleanups)
+        if (/^[0-9]+$/.test(coreOrderNumber) && coreOrderNumber.length === 5 && coreOrderNumber.startsWith('2')) {
+            coreOrderNumber = coreOrderNumber.substring(1); // e.g., "20175" becomes "0175"
+        }
+        
         const formattedInvoiceNumber = `SH-${coreOrderNumber}`;
 
 
