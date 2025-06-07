@@ -2,7 +2,7 @@
 'use server';
 
 import type { ShopifyVariantDetail, ShopifySyncState } from '@/lib/types';
-import { adminDb } from '@/lib/firebase-admin';
+import { getAdminDb } from '@/lib/firebase-admin'; // Corrected import
 import { Timestamp } from 'firebase-admin/firestore';
 
 // GraphQL API Response Structures
@@ -89,6 +89,8 @@ interface ShopifyGraphQLProductsResponse {
 
 const SYNC_STATE_DOC_ID = 'shopifyProductsSyncState';
 const SHOPIFY_CACHE_COLLECTION = 'shopifyProductCache';
+
+const adminDb = getAdminDb(); // Initialize adminDb by calling the imported function
 
 async function getSyncState(): Promise<ShopifySyncState | null> {
   try {

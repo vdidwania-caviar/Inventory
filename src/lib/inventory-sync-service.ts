@@ -1,8 +1,11 @@
+
 'use server';
 
-import { adminDb } from '@/lib/firebase-admin';
+import { getAdminDb } from '@/lib/firebase-admin';
 import { Timestamp as AdminTimestamp, FieldValue } from 'firebase-admin/firestore';
 import type { InventoryItem, ShopifyVariantDetail, SyncSummary } from '@/lib/types';
+
+const adminDb = getAdminDb();
 
 // Helper: Recursively remove all keys with value `undefined` (for Firestore compatibility)
 function removeUndefinedFields<T extends Record<string, any>>(obj: T): T {
@@ -10,7 +13,7 @@ function removeUndefinedFields<T extends Record<string, any>>(obj: T): T {
     .filter(([_, v]) => v !== undefined)
     .reduce((acc, [k, v]) => ({
       ...acc,
-      [k]: v && typeof v === "object" && !Array.isArray(v) && !(v instanceof Date)
+      [k]: v && typeof v === "object" && !Array.isArray(v) && !(v instanceof Date) && !(v instanceof AdminTimestamp) && !(v instanceof FieldValue)
         ? removeUndefinedFields(v)
         : v
     }), {} as T);
@@ -77,7 +80,7 @@ export async function syncShopifyToInventory(): Promise<SyncSummary> {
       }
 
       const existingLocalItem = localInventoryMapBySku.get(shopifyVariant.sku);
-      const currentFirestoreTimestamp = FieldValue.serverTimestamp(); 
+      const currentFirestoreTimestamp = FieldValue.serverTimestamp();
       const shopifyItemLastUpdated = shopifyVariant.productUpdatedAt || shopifyVariant.variantUpdatedAt;
 
       let variantString = "";
@@ -89,7 +92,7 @@ export async function syncShopifyToInventory(): Promise<SyncSummary> {
       const shopifyProductUrl = shopifyDomain && shopifyVariant.productHandle
           ? `https://${shopifyDomain}/products/${shopifyVariant.productHandle}`
           : undefined;
-      
+
       const shopifyDesc = shopifyVariant.productDescriptionHtml;
 
       if (existingLocalItem) {
@@ -99,61 +102,76 @@ export async function syncShopifyToInventory(): Promise<SyncSummary> {
           shopifyVariantId: shopifyVariant.shopifyVariantId,
           shopifyProductId: shopifyVariant.shopifyProductId,
           shopifyUpdatedAt: shopifyItemLastUpdated ? AdminTimestamp.fromDate(new Date(shopifyItemLastUpdated)) : FieldValue.delete(),
-          productTitle: shopifyVariant.productTitle, 
+          productTitle: shopifyVariant.productTitle,
           status: mapShopifyStatusToInventoryStatus(shopifyVariant.productStatus),
         };
 
-        // Handle description
         if (shopifyDesc !== undefined) {
             if (shopifyDesc !== existingLocalItem.description) {
                 updateData.description = shopifyDesc;
+                itemChanges.push(`Description updated.`);
             }
         } else {
             if (existingLocalItem.description !== undefined) {
                 updateData.description = FieldValue.delete();
+                itemChanges.push(`Description removed.`);
             }
         }
 
         if (shopifyProductUrl && shopifyProductUrl !== existingLocalItem.productUrl) {
             updateData.productUrl = shopifyProductUrl;
+             itemChanges.push(`Product URL updated.`);
         } else if (!shopifyProductUrl && existingLocalItem.productUrl) {
            updateData.productUrl = FieldValue.delete();
+            itemChanges.push(`Product URL removed.`);
         } else if (shopifyProductUrl) {
-             updateData.productUrl = shopifyProductUrl;
+             updateData.productUrl = shopifyProductUrl; // Ensure it's set if present
         }
+
 
         if (variantString && variantString !== existingLocalItem.variant) {
             updateData.variant = variantString;
+            itemChanges.push(`Variant updated to '${variantString}'.`);
         } else if (!variantString && existingLocalItem.variant) {
             updateData.variant = FieldValue.delete();
-        } else if (variantString) {
-            updateData.variant = variantString;
+            itemChanges.push(`Variant removed.`);
+        } else if (variantString) { // Ensure it's set if present
+             updateData.variant = variantString;
         }
+
 
         if (shopifyVariant.productVendor && shopifyVariant.productVendor !== existingLocalItem.vendor) {
             updateData.vendor = shopifyVariant.productVendor;
+            itemChanges.push(`Vendor updated to '${shopifyVariant.productVendor}'.`);
         } else if (!shopifyVariant.productVendor && existingLocalItem.vendor) {
             updateData.vendor = FieldValue.delete();
+            itemChanges.push(`Vendor removed.`);
         } else if (shopifyVariant.productVendor) {
             updateData.vendor = shopifyVariant.productVendor;
         }
 
+
         if (shopifyVariant.productType && shopifyVariant.productType !== existingLocalItem.productType) {
             updateData.productType = shopifyVariant.productType;
+            itemChanges.push(`Product type updated to '${shopifyVariant.productType}'.`);
         } else if (!shopifyVariant.productType && existingLocalItem.productType) {
             updateData.productType = FieldValue.delete();
+            itemChanges.push(`Product type removed.`);
         } else if (shopifyVariant.productType) {
             updateData.productType = shopifyVariant.productType;
         }
+
 
         if (shopifyVariant.productTags && shopifyVariant.productTags.length > 0) {
              const sortedShopifyTags = [...shopifyVariant.productTags].sort();
              const sortedLocalTags = existingLocalItem.tags ? [...existingLocalItem.tags].sort() : [];
             if (JSON.stringify(sortedShopifyTags) !== JSON.stringify(sortedLocalTags)) {
                  updateData.tags = shopifyVariant.productTags;
+                 itemChanges.push(`Tags updated.`);
             }
         } else if ((!shopifyVariant.productTags || shopifyVariant.productTags.length === 0) && existingLocalItem.tags && existingLocalItem.tags.length > 0) {
            updateData.tags = FieldValue.delete();
+           itemChanges.push(`Tags removed.`);
         }
 
         let shopifyImageSrc: string | undefined = undefined;
@@ -164,18 +182,23 @@ export async function syncShopifyToInventory(): Promise<SyncSummary> {
         }
         const newImagesArray = shopifyImageSrc ? [shopifyImageSrc] : [];
         const sortedNewImages = [...newImagesArray].sort();
-        const sortedLocalImages = existingLocalItem.images ? [...existingLocalItem.images].sort() : [];
+
+        const currentLocalImages = Array.isArray(existingLocalItem.images) ? existingLocalItem.images : (typeof existingLocalItem.images === 'string' ? [existingLocalItem.images] : []);
+        const sortedLocalImages = [...currentLocalImages].sort();
+
 
         if (JSON.stringify(sortedNewImages) !== JSON.stringify(sortedLocalImages)) {
             updateData.images = newImagesArray.length > 0 ? newImagesArray : FieldValue.delete();
+             itemChanges.push(`Images updated.`);
         }
+
 
         let preserveLocalPriceAndQty = false;
         if (existingLocalItem.updatedAt && shopifyItemLastUpdated) {
           try {
             const localItemLastUpdatedTimestamp = existingLocalItem.updatedAt instanceof AdminTimestamp
                 ? existingLocalItem.updatedAt
-                : AdminTimestamp.fromDate(new Date(existingLocalItem.updatedAt as string)); 
+                : AdminTimestamp.fromDate(new Date(existingLocalItem.updatedAt as string));
 
             const shopifyItemLastUpdatedTimestamp = AdminTimestamp.fromDate(new Date(shopifyItemLastUpdated));
 
@@ -190,17 +213,22 @@ export async function syncShopifyToInventory(): Promise<SyncSummary> {
 
         if (!preserveLocalPriceAndQty && typeof shopifyVariant.price === 'number' && shopifyVariant.price !== existingLocalItem.price) {
           updateData.price = shopifyVariant.price;
+          itemChanges.push(`Price updated to ${shopifyVariant.price}.`);
         }
         if (!preserveLocalPriceAndQty && typeof shopifyVariant.inventoryQuantity === 'number' && shopifyVariant.inventoryQuantity !== existingLocalItem.quantity) {
           updateData.quantity = shopifyVariant.inventoryQuantity;
+          itemChanges.push(`Quantity updated to ${shopifyVariant.inventoryQuantity}.`);
         }
 
         if (existingLocalItem.cost === undefined && typeof shopifyVariant.cost === 'number') {
           updateData.cost = shopifyVariant.cost;
+          itemChanges.push(`Cost set to ${shopifyVariant.cost}.`);
         } else if (existingLocalItem.cost !== undefined && typeof shopifyVariant.cost !== 'number') {
           updateData.cost = FieldValue.delete();
+          itemChanges.push(`Cost removed.`);
         } else if (typeof shopifyVariant.cost === 'number' && shopifyVariant.cost !== existingLocalItem.cost){
           updateData.cost = shopifyVariant.cost;
+          itemChanges.push(`Cost updated to ${shopifyVariant.cost}.`);
         }
 
         if (!existingLocalItem.dataAiHint && (shopifyVariant.productType || shopifyVariant.productTitle)) {
@@ -209,32 +237,35 @@ export async function syncShopifyToInventory(): Promise<SyncSummary> {
              let generatedHint = (hintType ? hintType + (hintTitle && hintType.toLowerCase() !== hintTitle.split(" ")[0].toLowerCase() ? " " + hintTitle.split(" ")[0] : "") : hintTitle).trim();
              if (generatedHint.split(' ').length > 2) generatedHint = generatedHint.split(' ').slice(0,2).join(' ');
              updateData.dataAiHint = generatedHint.toLowerCase() || 'product';
+             itemChanges.push(`Data AI hint generated: '${updateData.dataAiHint}'.`);
         }
 
-        let significantChange = false;
-        for (const key of Object.keys(updateData)) {
-            if (key === 'updatedAt') continue;
+        // Check if there are any actual changes beyond updatedAt and shopify sync fields
+        const hasMeaningfulChanges = Object.keys(updateData).some(key => {
+            if (['updatedAt', 'shopifyVariantId', 'shopifyProductId', 'shopifyUpdatedAt'].includes(key)) return false;
             const typedKey = key as keyof InventoryItem;
             const newValue = updateData[typedKey];
             const oldValue = existingLocalItem[typedKey];
-
-            const oldValStr = oldValue === undefined ? 'undefined' : JSON.stringify(Array.isArray(oldValue) ? [...oldValue].sort() : oldValue);
-            const newValStr = newValue === undefined ? 'undefined' : JSON.stringify(Array.isArray(newValue) ? [...newValue].sort() : newValue);
-
-            if (oldValStr !== newValStr) {
-                 significantChange = true;
-                 itemChanges.push(`Updated ${typedKey}: from '${oldValue === undefined ? "N/A" : oldValStr}' to '${newValue === undefined ? "N/A" : newValStr}'.`);
+            
+            // Special handling for arrays (like tags, images) for comparison
+            if (Array.isArray(oldValue) || Array.isArray(newValue)) {
+                const oldArray = Array.isArray(oldValue) ? [...oldValue].sort() : [];
+                const newArray = Array.isArray(newValue) ? [...newValue].sort() : [];
+                return JSON.stringify(oldArray) !== JSON.stringify(newArray);
             }
-        }
+             if (oldValue instanceof AdminTimestamp && newValue instanceof AdminTimestamp) {
+                return !oldValue.isEqual(newValue);
+            }
+             if (oldValue instanceof FieldValue || newValue instanceof FieldValue) return true; // Assume change if FieldValue involved
 
-        const shopifyMetaChanged = updateData.shopifyVariantId !== existingLocalItem.shopifyVariantId ||
-                                 updateData.shopifyProductId !== existingLocalItem.shopifyProductId ||
-                                 (updateData.shopifyUpdatedAt && existingLocalItem.shopifyUpdatedAt !== updateData.shopifyUpdatedAt?.toDate().toISOString());
+            return oldValue !== newValue;
+        });
 
-        if (significantChange || shopifyMetaChanged) {
+
+        if (hasMeaningfulChanges) {
           try {
-            const itemDocRef = adminDb.doc(`inventory/${existingLocalItem.id}`); 
-            batch.update(itemDocRef, removeUndefinedFields(updateData)); // <-- CHANGED
+            const itemDocRef = adminDb.doc(`inventory/${existingLocalItem.id}`);
+            batch.update(itemDocRef, removeUndefinedFields(updateData));
             operationsInBatch++;
             summary.itemsUpdated++;
             summary.detailedChanges?.push(`SKU ${shopifyVariant.sku}: ${itemChanges.join('; ')}`);
@@ -277,15 +308,15 @@ export async function syncShopifyToInventory(): Promise<SyncSummary> {
           shopifyVariantId: shopifyVariant.shopifyVariantId,
           shopifyProductId: shopifyVariant.shopifyProductId,
           shopifyUpdatedAt: shopifyItemLastUpdated ? AdminTimestamp.fromDate(new Date(shopifyItemLastUpdated)) : undefined,
-          createdAt: currentFirestoreTimestamp as any, 
-          updatedAt: currentFirestoreTimestamp as any, 
-          consignment: false, 
+          createdAt: currentFirestoreTimestamp as any,
+          updatedAt: currentFirestoreTimestamp as any,
+          consignment: false,
           dataAiHint: dataAiHint,
         };
-        
+
         try {
           const newItemRef = inventoryCollectionRef.doc(); // Auto-generate ID
-          batch.set(newItemRef, removeUndefinedFields(newItemData)); // <-- CHANGED
+          batch.set(newItemRef, removeUndefinedFields(newItemData));
           operationsInBatch++;
           summary.itemsAdded++;
           summary.detailedChanges?.push(`SKU ${shopifyVariant.sku}: Added new item '${shopifyVariant.productTitle}'.`);
