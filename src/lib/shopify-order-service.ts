@@ -26,7 +26,7 @@ interface ShopifyGraphQLOrdersResponse {
 const ORDER_SYNC_STATE_DOC_ID = 'shopifyOrdersSyncState';
 const SHOPIFY_ORDER_CACHE_COLLECTION = 'shopifyOrderCache';
 const DEFAULT_ORDERS_PER_PAGE = 25;
-const MAX_BATCH_OPERATIONS = 450;
+const MAX_BATCH_OPERATIONS = 450; // Shared constant for batch operations
 
 export async function getShopifyOrderSyncState(): Promise<ShopifyOrderSyncState | null> {
   const adminDb = getAdminDb();
@@ -78,7 +78,7 @@ async function updateShopifyOrderSyncState(newState: Partial<ShopifyOrderSyncSta
   }
 }
 
-interface FetchAndCacheResult {
+export interface FetchAndCacheResult {
   success: boolean;
   fetchedCount: number;
   cachedCount: number;
@@ -88,6 +88,9 @@ interface FetchAndCacheResult {
   syncTypeUsed?: 'full' | 'delta';
   error?: string;
   details?: string[];
+  // Added for migration specific summary
+  salesProcessed?: number;
+  salesUpdatedWithInvoiceId?: number;
 }
 
 export async function fetchAndCacheShopifyOrders({
@@ -244,17 +247,22 @@ export async function fetchAndCacheShopifyOrders({
             continue;
         }
 
+        // Refined Invoice Number Formatting
         let tempOrderName = shopifyOrder.name;
-        if (tempOrderName.toUpperCase().startsWith('SH-')) { tempOrderName = tempOrderName.substring(3); }
-        tempOrderName = tempOrderName.replace(/^[0-9]+[.\-_ ]\s*|^#(order\s*#|order\s*|#)?/i, '').trim();
+        if (tempOrderName.toUpperCase().startsWith('SH-')) {
+             tempOrderName = tempOrderName.substring(3);
+        }
+        tempOrderName = tempOrderName.replace(/^[0-9]+[.\-_ ]\s*|^#\s*/, '').trim();
+        
         let coreOrderNumber = tempOrderName;
-        if (/^[0-9]+$/.test(coreOrderNumber) && coreOrderNumber.length === 5 && coreOrderNumber.startsWith('2')) {
-            coreOrderNumber = coreOrderNumber.substring(1);
+        if (/^2\d{4}$/.test(coreOrderNumber)) { // If it's a 5-digit number starting with 2 (e.g., "20175")
+            coreOrderNumber = coreOrderNumber.substring(1); // Strip the leading '2' (e.g., "0175")
         }
         const formattedInvoiceNumber = `SH-${coreOrderNumber}`;
 
-        const invoiceDocRef = invoicesCollectionRef.doc(formattedInvoiceNumber); // Use formatted number as Doc ID
-        const existingInvoiceSnap = await invoiceDocRef.get(); // Direct get by ID
+
+        const invoiceDocRef = invoicesCollectionRef.doc(formattedInvoiceNumber);
+        const existingInvoiceSnap = await invoiceDocRef.get(); 
 
         if (existingInvoiceSnap.exists) {
             console.log(`Shopify Order Service: Invoice ${formattedInvoiceNumber} (from Shopify Order GID ${shopifyOrder.id}) already exists. Skipping.`);
@@ -500,130 +508,151 @@ export async function getCachedShopifyOrders(): Promise<ShopifyOrderCacheItem[]>
 }
 
 // --- Retroactive Sales to Invoice Migration ---
-export async function migrateExistingSalesToInvoices() {
+export async function migrateExistingSalesToInvoices(): Promise<FetchAndCacheResult> {
   const adminDb = getAdminDb();
   const salesRef = adminDb.collection('sales');
   const invoicesRef = adminDb.collection('invoices');
   let batch = adminDb.batch();
   let operationsInBatch = 0;
-  const MAX_OPS = 450;
 
-  const summary = {
+  const summary: FetchAndCacheResult = {
+    success: false,
     salesProcessed: 0,
     invoicesCreated: 0,
     salesUpdatedWithInvoiceId: 0,
-    errors: [] as string[],
-    details: [] as string[],
+    details: [],
+    fetchedCount: 0,
+    cachedCount: 0,
+    deletedCount: 0,
   };
 
   try {
-    summary.details.push("Starting migration of existing 'sales' records to 'invoices'.");
-    const salesSnapshot = await salesRef.where('invoiceId', '==', null).get(); // Process only sales not yet linked
-    summary.salesProcessed = salesSnapshot.docs.length;
-    summary.details.push(`Found ${summary.salesProcessed} unlinked sales records to process.`);
+    summary.details?.push("Starting migration of existing 'sales' records to 'invoices'. Fetching ALL sales records to check linkage.");
+    const salesSnapshot = await salesRef.orderBy('Invoice').get();
+    
+    const unlinkedSalesDocs = salesSnapshot.docs.filter(doc => {
+        const data = doc.data();
+        return data.invoiceId === null || data.invoiceId === undefined || data.invoiceId === "";
+    });
 
-    if (salesSnapshot.empty) {
-      summary.details.push("No unlinked sales records found. Migration not needed or already complete for these.");
+    summary.salesProcessed = unlinkedSalesDocs.length;
+    summary.details?.push(`Found ${salesSnapshot.docs.length} total sales records. After filtering, ${summary.salesProcessed} are considered unlinked and will be processed.`);
+
+    if (unlinkedSalesDocs.length === 0) {
+      summary.details?.push("No unlinked sales records found after filtering. Migration not needed or already complete.");
+      summary.success = true; // Mark as success if nothing to do
       return summary;
     }
 
-    const salesByInvoiceNumber = new Map<string, Sale[]>();
-
-    salesSnapshot.docs.forEach(doc => {
+    const salesByOriginalInvoiceNum = new Map<string, Sale[]>();
+    unlinkedSalesDocs.forEach(doc => {
       const sale = { id: doc.id, ...doc.data() } as Sale;
-      if (sale.Invoice) { // We need the Shopify Order # (stored in sale.Invoice)
-        const salesGroup = salesByInvoiceNumber.get(sale.Invoice) || [];
+      const originalInvoiceNum = sale.Invoice; 
+      if (originalInvoiceNum) {
+        const salesGroup = salesByOriginalInvoiceNum.get(originalInvoiceNum) || [];
         salesGroup.push(sale);
-        salesByInvoiceNumber.set(sale.Invoice, salesGroup);
+        salesByOriginalInvoiceNum.set(originalInvoiceNum, salesGroup);
       } else {
-        summary.details.push(`Skipping sale ID ${sale.id} as it has no 'Invoice' (Shopify Order #) field.`);
+        summary.details?.push(`Skipping unlinked sale ID ${sale.id} as it has no 'Invoice' (Shopify Order #) field for grouping.`);
       }
     });
 
-    summary.details.push(`Grouped unlinked sales into ${salesByInvoiceNumber.size} potential new invoices.`);
+    summary.details?.push(`Grouped ${summary.salesProcessed} unlinked sales into ${salesByOriginalInvoiceNum.size} potential invoices based on original Shopify Order #.`);
 
-    for (const [originalInvoiceNum, salesGroup] of salesByInvoiceNumber.entries()) {
-      // Format the invoice number consistently (SH-XXXX) to use as Document ID
-      let tempOrderName = originalInvoiceNum;
+    for (const [originalShopifyOrderNum, salesGroup] of salesByOriginalInvoiceNum.entries()) {
+      let tempOrderName = originalShopifyOrderNum;
       if (tempOrderName.toUpperCase().startsWith('SH-')) { tempOrderName = tempOrderName.substring(3); }
-      tempOrderName = tempOrderName.replace(/^[0-9]+[.\-_ ]\s*|^#(order\s*#|order\s*|#)?/i, '').trim();
+      tempOrderName = tempOrderName.replace(/^[0-9]+[.\-_ ]\s*|^#\s*/, '').trim();
       let coreOrderNumber = tempOrderName;
-      if (/^[0-9]+$/.test(coreOrderNumber) && coreOrderNumber.length === 5 && coreOrderNumber.startsWith('2')) {
-          coreOrderNumber = coreOrderNumber.substring(1);
-      }
+      if (/^2\d{4}$/.test(coreOrderNumber)) { coreOrderNumber = coreOrderNumber.substring(1); }
       const formattedFirestoreInvoiceId = `SH-${coreOrderNumber}`;
 
       const invoiceDocRef = invoicesRef.doc(formattedFirestoreInvoiceId);
       const existingInvoiceSnap = await invoiceDocRef.get();
+      
+      if (!existingInvoiceSnap.exists) {
+        const firstSale = salesGroup[0];
+        const invoiceItems: InvoiceItem[] = salesGroup.map(s => ({
+          itemName: s.Item || 'Unknown Item from Sale',
+          itemSku: s.SKU || undefined,
+          itemQuantity: s.Quantity || 0,
+          itemPricePerUnit: (s.Price && s.Quantity && s.Quantity > 0) ? parseFloat((s.Price / s.Quantity).toFixed(2)) : (s.Price || 0),
+          lineItemTotal: s.Price || 0,
+          itemNotes: s.notes || undefined,
+        }));
 
-      if (existingInvoiceSnap.exists) {
-        summary.details.push(`Invoice ${formattedFirestoreInvoiceId} already exists. Linking sales to it.`);
-        for (const sale of salesGroup) {
-            batch.update(salesRef.doc(sale.id), { invoiceId: formattedFirestoreInvoiceId, updatedAt: FieldValue.serverTimestamp() });
-            operationsInBatch++;
-            summary.salesUpdatedWithInvoiceId++;
-            if (operationsInBatch >= MAX_OPS) { await batch.commit(); batch = adminDb.batch(); operationsInBatch = 0; }
-        }
-        continue;
+        const subtotal = invoiceItems.reduce((acc, item) => acc + (item.lineItemTotal || 0), 0);
+        const taxAmount = firstSale.Tax || 0; 
+        const totalAmount = subtotal + taxAmount;
+        const allocatedPayment = salesGroup.reduce((acc, s) => acc + (s.allocated_payment || 0), 0) || totalAmount; // Sum payments or default to total
+
+        const newInvoiceData: Omit<Invoice, 'id'> = {
+          invoiceNumber: formattedFirestoreInvoiceId,
+          shopifyOrderId: firstSale.ID || undefined, 
+          invoiceDate: firstSale.Date || new Date().toISOString(), 
+          customerName: firstSale.Customer || 'Unknown Customer',
+          customerId: firstSale.customerId || firstSale.customer_ID || undefined,
+          items: invoiceItems,
+          subtotal: parseFloat(subtotal.toFixed(2)),
+          taxAmount: parseFloat(taxAmount.toFixed(2)),
+          totalAmount: parseFloat(totalAmount.toFixed(2)),
+          invoiceStatus: (totalAmount - allocatedPayment <= 0.001) ? 'Paid' : 'Partially Paid', 
+          totalAllocatedPayment: parseFloat(allocatedPayment.toFixed(2)),
+          totalBalance: parseFloat((totalAmount - allocatedPayment).toFixed(2)),
+          channel: firstSale.channel || 'Shopify', 
+          createdAt: firstSale.createdAt || FieldValue.serverTimestamp() as any,
+          updatedAt: FieldValue.serverTimestamp() as any,
+        };
+        batch.set(invoiceDocRef, newInvoiceData);
+        operationsInBatch++;
+        summary.invoicesCreated++;
+        summary.details?.push(`Staged new invoice ${formattedFirestoreInvoiceId} (from Shopify Order # ${originalShopifyOrderNum}).`);
+      } else {
+        summary.details?.push(`Invoice ${formattedFirestoreInvoiceId} (from Shopify Order # ${originalShopifyOrderNum}) already exists.`);
       }
-
-      const firstSale = salesGroup[0];
-      const invoiceItems: InvoiceItem[] = salesGroup.map(s => ({
-        itemName: s.Item || 'Unknown Item from Sale',
-        itemSku: s.SKU || undefined,
-        itemQuantity: s.Quantity || 0,
-        itemPricePerUnit: (s.Price && s.Quantity && s.Quantity > 0) ? parseFloat((s.Price / s.Quantity).toFixed(2)) : (s.Price || 0),
-        lineItemTotal: s.Price || 0,
-        itemNotes: s.notes || undefined,
-      }));
-
-      const subtotal = invoiceItems.reduce((acc, item) => acc + (item.lineItemTotal || 0), 0);
-      const taxAmount = firstSale.Tax || 0; 
-      const totalAmount = subtotal + taxAmount; // Or use firstSale.Revenue if more appropriate and available
-
-      const newInvoiceData: Omit<Invoice, 'id'> = {
-        invoiceNumber: formattedFirestoreInvoiceId, // This is the doc ID
-        invoiceDate: firstSale.Date || new Date().toISOString(), 
-        customerName: firstSale.Customer || 'Unknown Customer',
-        customerId: firstSale.customerId || firstSale.customer_ID || undefined,
-        items: invoiceItems,
-        subtotal: parseFloat(subtotal.toFixed(2)),
-        taxAmount: parseFloat(taxAmount.toFixed(2)),
-        totalAmount: parseFloat(totalAmount.toFixed(2)),
-        invoiceStatus: 'Paid', 
-        totalAllocatedPayment: parseFloat((firstSale.allocated_payment ?? totalAmount).toFixed(2)), // Use existing payment if available
-        totalBalance: parseFloat((totalAmount - (firstSale.allocated_payment ?? totalAmount)).toFixed(2)),
-        channel: firstSale.channel || 'Shopify', // Assume Shopify if not specified
-        createdAt: firstSale.createdAt || FieldValue.serverTimestamp() as any,
-        updatedAt: FieldValue.serverTimestamp() as any,
-        // shopifyOrderId would ideally be present on the Sale record if it came from Shopify.
-        // If not, this field might remain undefined for migrated invoices.
-      };
-
-      batch.set(invoiceDocRef, newInvoiceData);
-      operationsInBatch++;
-      summary.invoicesCreated++;
-      summary.details.push(`Staged new invoice ${formattedFirestoreInvoiceId}.`);
 
       for (const sale of salesGroup) {
-        batch.update(salesRef.doc(sale.id), { invoiceId: formattedFirestoreInvoiceId, updatedAt: FieldValue.serverTimestamp() });
-        operationsInBatch++;
-        summary.salesUpdatedWithInvoiceId++;
-        if (operationsInBatch >= MAX_OPS) { await batch.commit(); batch = adminDb.batch(); operationsInBatch = 0; }
+        if (sale.invoiceId !== formattedFirestoreInvoiceId) {
+          batch.update(salesRef.doc(sale.id), { 
+            invoiceId: formattedFirestoreInvoiceId, 
+            updatedAt: FieldValue.serverTimestamp() 
+          });
+          operationsInBatch++;
+          summary.salesUpdatedWithInvoiceId++;
+          if (operationsInBatch >= MAX_BATCH_OPERATIONS) { 
+            await batch.commit(); 
+            batch = adminDb.batch(); 
+            operationsInBatch = 0; 
+            summary.details?.push("Committed intermediate batch during sales linking.");
+          }
+        }
       }
-       if (operationsInBatch >= MAX_OPS) { await batch.commit(); batch = adminDb.batch(); operationsInBatch = 0; }
+      if (operationsInBatch >= MAX_BATCH_OPERATIONS) {
+         await batch.commit(); batch = adminDb.batch(); operationsInBatch = 0; 
+         summary.details?.push("Committed intermediate batch after processing a sales group.");
+      }
     }
 
     if (operationsInBatch > 0) {
       await batch.commit();
-      summary.details.push("Committed final batch of migration operations.");
+      summary.details?.push("Committed final batch of migration operations.");
     }
-    summary.details.push("Migration process finished.");
+    summary.success = true;
+    summary.details?.push("Migration process finished successfully.");
 
   } catch (error: any) {
     console.error("Error during sales to invoice migration:", error);
-    summary.errors.push(`Migration failed: ${error.message}`);
-    summary.details.push(`Migration failed: ${error.message}`);
+    summary.success = false;
+    summary.error = error.message || "Unknown migration error";
+    summary.details?.push(`Migration failed: ${summary.error}`);
+    if (operationsInBatch > 0) {
+      try {
+        await batch.commit();
+        summary.details?.push("Committed partial batch before error.");
+      } catch (batchError: any) {
+        summary.details?.push(`Failed to commit partial batch: ${batchError.message}`);
+      }
+    }
   }
   return summary;
 }

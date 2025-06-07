@@ -1,4 +1,4 @@
-
+import { PushInvoicesButton } from '@/components/invoices/push-invoices-button';
 import { InvoicesListTable } from '@/components/invoices/invoices-list-table';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -8,6 +8,9 @@ import Link from 'next/link';
 export default function InvoicesListPage() {
   return (
     <div className="space-y-6">
+      {/* ====== Migration Button at the top ====== */}
+      <PushInvoicesButton />
+
       <div className="flex flex-col sm:flex-row justify-between items-center gap-4">
         <h1 className="text-3xl font-bold font-headline tracking-tight">Invoices</h1>
         <div className="flex gap-2">
@@ -37,4 +40,4 @@ export default function InvoicesListPage() {
       </Card>
     </div>
   );
-}
+}<PushInvoicesButton invoices={yourInvoicesArray} />
