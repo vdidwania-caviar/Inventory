@@ -213,6 +213,8 @@ export function AddInvoiceForm() {
     }
     
     const batch = writeBatch(db);
+    const invoiceCollectionRef = collection(db, 'invoices');
+    const salesCollectionRef = collection(db, 'sales');
 
     try {
       const subtotalCalc = values.items.reduce((acc, item) => acc + (item.itemQuantity || 0) * (item.itemPricePerUnit || 0), 0);
@@ -230,48 +232,46 @@ export function AddInvoiceForm() {
         subtotal: parseFloat(subtotalCalc.toFixed(2)),
         taxAmount: parseFloat(taxAmountCalc.toFixed(2)),
         totalAmount: parseFloat(totalAmountCalc.toFixed(2)),
-        totalAllocatedPayment: 0, // New invoices start with 0 paid
-        totalBalance: parseFloat(totalAmountCalc.toFixed(2)), // Balance is full amount
-        channel: 'Manual', // Manually created invoice
+        totalAllocatedPayment: 0, 
+        totalBalance: parseFloat(totalAmountCalc.toFixed(2)), 
+        channel: 'Manual' as InvoiceFormValues['channel'], 
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       };
       
-      const invoiceCollectionRef = collection(db, 'invoices');
-      const newInvoiceDocRef = doc(invoiceCollectionRef); // Generate a new doc ref for the invoice
+      // Use the generated invoiceNumber as the document ID
+      const newInvoiceDocRef = doc(invoiceCollectionRef, invoiceDataToSave.invoiceNumber);
       batch.set(newInvoiceDocRef, invoiceDataToSave);
 
-      const salesCollectionRef = collection(db, 'sales');
       for (const item of invoiceDataToSave.items) {
         const lineItemTotal = (item.itemQuantity || 0) * (item.itemPricePerUnit || 0);
-        // Create a Sale document for each line item
         const saleData: Omit<Sale, 'id' | 'items'> & { items?: any[] } = { 
-          invoiceId: newInvoiceDocRef.id, // Link to the new Firestore invoice ID
+          invoiceId: newInvoiceDocRef.id, // This will be the invoiceNumber, e.g., "I000001"
           Invoice: invoiceDataToSave.invoiceNumber, 
           Customer: invoiceDataToSave.customerName,
           customerId: invoiceDataToSave.customerId,
-          Date: invoiceDataToSave.invoiceDate.toDate().toISOString(), // Use invoice date
+          Date: invoiceDataToSave.invoiceDate.toDate().toISOString(),
           Item: item.itemName,
           SKU: item.itemSku,
           Quantity: item.itemQuantity,
           Price: lineItemTotal, 
-          Revenue: lineItemTotal, // Assuming revenue is the same as price for manual entries
-          Tax: 0, // Assuming no item-specific tax here, overall tax is on invoice
-          Taxable: false, // Default, can be adjusted if item-level tax needed
-          allocated_payment: 0, // Line item payment allocation starts at 0
-          Balance: lineItemTotal, // Line item balance starts at full amount
-          channel: 'Manual', // Source of this sale line item
+          Revenue: lineItemTotal, 
+          Tax: 0, 
+          Taxable: false, 
+          allocated_payment: 0, 
+          Balance: lineItemTotal, 
+          channel: 'Manual', 
           notes: item.itemNotes,
           createdAt: serverTimestamp() as any,
           updatedAt: serverTimestamp() as any,
         };
-        delete saleData.items; // Ensure 'items' field from Sale type doesn't conflict if it exists
+        delete saleData.items;
 
-        const newSaleDocRef = doc(salesCollectionRef); // Create a new doc ref for the sale
+        const newSaleDocRef = doc(salesCollectionRef); 
         batch.set(newSaleDocRef, saleData);
       }
       
-      await batch.commit(); // Commit all batched writes (invoice + sales)
+      await batch.commit();
 
       toast({
         title: 'Invoice Created',

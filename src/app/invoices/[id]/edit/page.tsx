@@ -25,7 +25,7 @@ import { InventoryItemSkuSelector } from '@/components/invoices/inventory-item-s
 export default function EditInvoicePage() {
   const router = useRouter();
   const params = useParams();
-  const invoiceId = typeof params.id === 'string' ? params.id : undefined;
+  const invoiceId = typeof params.id === 'string' ? params.id : undefined; // This ID is "SH-XXXX" or "IXXXXX"
   const { toast } = useToast();
 
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -113,7 +113,7 @@ export default function EditInvoicePage() {
   }, [form, calculateTotals]);
 
   useEffect(() => {
-    if (!invoiceId) {
+    if (!invoiceId) { // invoiceId is the document ID here, e.g., "SH-1075"
       toast({ variant: "destructive", title: "Error", description: "Invoice ID is missing." });
       router.push('/invoices');
       return;
@@ -121,7 +121,7 @@ export default function EditInvoicePage() {
     const fetchInvoice = async () => {
       setIsInitialLoading(true);
       try {
-        const invoiceDocRef = doc(db, 'invoices', invoiceId);
+        const invoiceDocRef = doc(db, 'invoices', invoiceId); // Use invoiceId directly
         const invoiceDocSnap = await getDoc(invoiceDocRef);
         if (invoiceDocSnap.exists()) {
           const data = invoiceDocSnap.data() as InvoiceType;
@@ -143,6 +143,7 @@ export default function EditInvoicePage() {
           }
           form.reset({
             ...data,
+            invoiceNumber: data.invoiceNumber || invoiceId, // Ensure invoiceNumber field is populated
             invoiceDate: invoiceDateObj,
             dueDate: dueDateObj,
             items: data.items.map(item => ({
@@ -199,10 +200,10 @@ export default function EditInvoicePage() {
     setSubmitError(null);
     
     const batch = writeBatch(db);
+    const invoiceDocRef = doc(db, 'invoices', invoiceId); // Use invoiceId (e.g. SH-XXXX) as doc ID
 
     try {
-      const invoiceDocRef = doc(db, 'invoices', invoiceId);
-      const existingInvoiceSnap = await getDoc(invoiceDocRef); // Get fresh doc, not from transaction
+      const existingInvoiceSnap = await getDoc(invoiceDocRef); 
       if(!existingInvoiceSnap.exists()) throw new Error("Original invoice not found for update.");
       const existingInvoiceData = existingInvoiceSnap.data() as InvoiceType;
 
@@ -213,6 +214,7 @@ export default function EditInvoicePage() {
 
       const invoiceDataToUpdate = {
         ...values,
+        invoiceNumber: values.invoiceNumber || invoiceId, // Ensure invoiceNumber matches the doc ID
         invoiceDate: Timestamp.fromDate(values.invoiceDate),
         dueDate: values.dueDate ? Timestamp.fromDate(values.dueDate) : FieldValue.delete() as unknown as undefined,
         items: values.items.map(item => ({ ...item, lineItemTotal: parseFloat(((item.itemQuantity || 0) * (item.itemPricePerUnit || 0)).toFixed(2)) })),
@@ -222,22 +224,22 @@ export default function EditInvoicePage() {
         totalAllocatedPayment: totalAllocatedPaymentCurrent,
         totalBalance: parseFloat((totalAmountCalc - totalAllocatedPaymentCurrent).toFixed(2)),
         updatedAt: serverTimestamp(),
-        // channel will remain what it was (e.g., 'Shopify' or 'Manual')
+        channel: existingInvoiceData.channel || 'Manual', // Preserve original channel
       };
       
       batch.update(invoiceDocRef, invoiceDataToUpdate);
 
-      // Delete existing Sale records for this invoice
-      const salesQuery = query(collection(db, 'sales'), where("invoiceId", "==", invoiceId));
-      const existingSaleDocsSnap = await getDocs(salesQuery); // Regular getDocs, not transaction.get
+      const salesCollectionRef = collection(db, 'sales');
+      // Delete existing Sale records for this invoice (identified by invoiceId, which is the invoiceNumber)
+      const salesQuery = query(salesCollectionRef, where("invoiceId", "==", invoiceId));
+      const existingSaleDocsSnap = await getDocs(salesQuery); 
       existingSaleDocsSnap.forEach(docSnap => batch.delete(docSnap.ref));
 
       // Create new Sale records from updated invoice items
-      const salesCollectionRef = collection(db, 'sales');
       for (const item of invoiceDataToUpdate.items) {
         const lineItemTotal = (item.itemQuantity || 0) * (item.itemPricePerUnit || 0);
         const saleData: Omit<Sale, 'id' | 'items'> & { items?: any[] } = {
-          invoiceId: invoiceId, 
+          invoiceId: invoiceId, // Link to the invoice's document ID (SH-XXXX or IXXXXX)
           Invoice: invoiceDataToUpdate.invoiceNumber,
           Customer: invoiceDataToUpdate.customerName, 
           customerId: invoiceDataToUpdate.customerId,
@@ -249,12 +251,12 @@ export default function EditInvoicePage() {
           Revenue: lineItemTotal,
           Tax: 0, 
           Taxable: false, 
-          allocated_payment: 0, // Assuming payment allocation per line item is complex and handled elsewhere or not needed for 'sales' records
+          allocated_payment: 0, 
           Balance: lineItemTotal, 
-          channel: existingInvoiceData.channel || 'Manual', // Preserve original channel or default
+          channel: invoiceDataToUpdate.channel,
           notes: item.itemNotes,
-          createdAt: invoiceDataToUpdate.updatedAt, // Should ideally be the invoice's original createdAt if available, or now
-          updatedAt: invoiceDataToUpdate.updatedAt,
+          createdAt: existingInvoiceData.createdAt || serverTimestamp() as any, 
+          updatedAt: serverTimestamp() as any,
         };
         delete saleData.items;
         const newSaleDocRef = doc(salesCollectionRef);

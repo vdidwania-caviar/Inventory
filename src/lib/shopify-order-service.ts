@@ -121,7 +121,7 @@ export async function fetchAndCacheShopifyOrders({
   try {
     syncState = await getShopifyOrderSyncState();
   } catch (error) {
-    const syncStateErrorMsg = `Warning: Could not fetch sync state: ${(error as Error).message}. Proceeding with full sync.`;
+    const syncStateErrorMsg = `Warning: Could not fetch sync state: ${(error as Error).message}. Proceeding with full sync if forced or appropriate.`;
     resultSummary.details?.push(syncStateErrorMsg);
     console.warn(`Shopify Order Service: ${syncStateErrorMsg}`);
   }
@@ -136,7 +136,7 @@ export async function fetchAndCacheShopifyOrders({
     console.log(`Shopify Order Service: Determined DELTA SYNC. Fetching orders updated after: ${syncState.lastOrderSyncTimestamp}`);
     resultSummary.details?.push(`Performing delta sync. Fetching orders updated after: ${syncState.lastOrderSyncTimestamp}`);
   } else {
-    const reason = effectiveSyncType === 'full' ? (forceFullSync ? 'forced by parameter' : 'no previous full sync recorded')
+    const reason = effectiveSyncType === 'full' ? (forceFullSync ? 'forced by parameter' : !syncState?.lastFullOrderSyncCompletionTimestamp ? 'no previous full sync recorded' : 'delta conditions not met')
                    : 'Delta conditions not met (e.g., no lastOrderSyncTimestamp), falling back to full sync.';
     effectiveSyncType = 'full';
     resultSummary.syncTypeUsed = 'full';
@@ -232,6 +232,10 @@ export async function fetchAndCacheShopifyOrders({
 
     let currentBatch = adminDb.batch();
     let operationsInBatch = 0;
+    const invoicesCollectionRef = adminDb.collection('invoices');
+    const customersCollectionRef = adminDb.collection('customers');
+    const salesCollectionRef = adminDb.collection('sales');
+
 
     for (const shopifyOrder of allFetchedOrders) {
         if (!shopifyOrder.id || !shopifyOrder.name) {
@@ -240,37 +244,21 @@ export async function fetchAndCacheShopifyOrders({
             continue;
         }
 
-        // Refined Invoice Number Formatting
-        let coreOrderNumber = shopifyOrder.name;
-
-        // 1. Remove potential "SH-" prefix if it was already part of the Shopify order name
-        if (coreOrderNumber.toUpperCase().startsWith('SH-')) {
-            coreOrderNumber = coreOrderNumber.substring(3);
-        }
-
-        // 2. Remove "number." or "number-" style prefixes (e.g., "2. ", "1-")
-        coreOrderNumber = coreOrderNumber.replace(/^[0-9]+[.\-_]\s*/, '');
-        
-        // 3. Remove common textual prefixes (case-insensitive for "Order" and leading "#")
-        coreOrderNumber = coreOrderNumber.replace(/^(order\s*#|order\s*|#)/i, '');
-        
-        // Trim any leading/trailing whitespace
-        coreOrderNumber = coreOrderNumber.trim();
-
-        // 4. Specific rule for 5-digit numbers starting with '2' (after other cleanups)
+        let tempOrderName = shopifyOrder.name;
+        if (tempOrderName.toUpperCase().startsWith('SH-')) { tempOrderName = tempOrderName.substring(3); }
+        tempOrderName = tempOrderName.replace(/^[0-9]+[.\-_ ]\s*|^#(order\s*#|order\s*|#)?/i, '').trim();
+        let coreOrderNumber = tempOrderName;
         if (/^[0-9]+$/.test(coreOrderNumber) && coreOrderNumber.length === 5 && coreOrderNumber.startsWith('2')) {
-            coreOrderNumber = coreOrderNumber.substring(1); // e.g., "20175" becomes "0175"
+            coreOrderNumber = coreOrderNumber.substring(1);
         }
-        
         const formattedInvoiceNumber = `SH-${coreOrderNumber}`;
 
+        const invoiceDocRef = invoicesCollectionRef.doc(formattedInvoiceNumber); // Use formatted number as Doc ID
+        const existingInvoiceSnap = await invoiceDocRef.get(); // Direct get by ID
 
-        const invoiceQuery = adminDb.collection('invoices').where('shopifyOrderId', '==', shopifyOrder.id);
-        const existingInvoiceSnap = await invoiceQuery.limit(1).get();
-
-        if (!existingInvoiceSnap.empty) {
-            console.log(`Shopify Order Service: Invoice already exists for Shopify Order GID ${shopifyOrder.id} (Order #: ${shopifyOrder.name}). Skipping.`);
-            resultSummary.details?.push(`Invoice for Shopify Order ${shopifyOrder.name} (Invoice #: ${formattedInvoiceNumber}) already exists.`);
+        if (existingInvoiceSnap.exists) {
+            console.log(`Shopify Order Service: Invoice ${formattedInvoiceNumber} (from Shopify Order GID ${shopifyOrder.id}) already exists. Skipping.`);
+            resultSummary.details?.push(`Invoice ${formattedInvoiceNumber} for Shopify Order ${shopifyOrder.name} already exists.`);
             continue;
         }
 
@@ -279,14 +267,14 @@ export async function fetchAndCacheShopifyOrders({
 
         if (shopifyOrder.customer?.id) { 
             const shopifyCustomerGid = shopifyOrder.customer.id;
-            const customerQuery = adminDb.collection('customers').where('shopifyCustomerId', '==', shopifyCustomerGid).limit(1);
+            const customerQuery = customersCollectionRef.where('shopifyCustomerId', '==', shopifyCustomerGid).limit(1);
             const existingCustomerSnap = await customerQuery.get();
 
             if (!existingCustomerSnap.empty) {
                 firestoreCustomerId = existingCustomerSnap.docs[0].id;
                 firestoreCustomerName = existingCustomerSnap.docs[0].data().name || firestoreCustomerName;
             } else {
-                const newCustomerRef = adminDb.collection('customers').doc();
+                const newCustomerRef = customersCollectionRef.doc();
                 const newCustomerData: Partial<Customer> = {
                     name: `${shopifyOrder.customer.firstName || ''} ${shopifyOrder.customer.lastName || ''}`.trim() || shopifyOrder.email || 'Shopify Customer',
                     email: shopifyOrder.customer.email || undefined,
@@ -321,7 +309,7 @@ export async function fetchAndCacheShopifyOrders({
         const totalAmount = parseFloat(shopifyOrder.totalPriceSet.shopMoney.amount);
         
         const newInvoiceData: Omit<Invoice, 'id'> = {
-            invoiceNumber: formattedInvoiceNumber,
+            invoiceNumber: formattedInvoiceNumber, // This is also the document ID
             shopifyOrderId: shopifyOrder.id,
             invoiceDate: shopifyOrder.processedAt || shopifyOrder.createdAt, 
             customerName: firestoreCustomerName,
@@ -337,15 +325,14 @@ export async function fetchAndCacheShopifyOrders({
             createdAt: FieldValue.serverTimestamp() as unknown as string,
             updatedAt: FieldValue.serverTimestamp() as unknown as string,
         };
-        const newInvoiceRef = adminDb.collection('invoices').doc();
-        currentBatch.set(newInvoiceRef, newInvoiceData); operationsInBatch++;
+        currentBatch.set(invoiceDocRef, newInvoiceData); operationsInBatch++; // Use invoiceDocRef (with custom ID)
         resultSummary.invoicesCreated++;
         resultSummary.details?.push(`Invoice ${newInvoiceData.invoiceNumber} created for Shopify Order ${shopifyOrder.name}.`);
 
         for (const item of newInvoiceData.items) {
-            const newSaleRef = adminDb.collection('sales').doc();
+            const newSaleRef = salesCollectionRef.doc();
             const saleData: Omit<Sale, 'id'|'items'|'totalAmount'> = { 
-                invoiceId: newInvoiceRef.id,
+                invoiceId: invoiceDocRef.id, // This is now formattedInvoiceNumber
                 Invoice: newInvoiceData.invoiceNumber,
                 Customer: newInvoiceData.customerName,
                 customerId: newInvoiceData.customerId,
@@ -512,7 +499,7 @@ export async function getCachedShopifyOrders(): Promise<ShopifyOrderCacheItem[]>
   }
 }
 
-// --- Retroactive Sales to Invoice Migration (NEW) ---
+// --- Retroactive Sales to Invoice Migration ---
 export async function migrateExistingSalesToInvoices() {
   const adminDb = getAdminDb();
   const salesRef = adminDb.collection('sales');
@@ -531,54 +518,58 @@ export async function migrateExistingSalesToInvoices() {
 
   try {
     summary.details.push("Starting migration of existing 'sales' records to 'invoices'.");
-    const salesSnapshot = await salesRef.get();
+    const salesSnapshot = await salesRef.where('invoiceId', '==', null).get(); // Process only sales not yet linked
     summary.salesProcessed = salesSnapshot.docs.length;
-    summary.details.push(`Found ${summary.salesProcessed} sales records to process.`);
+    summary.details.push(`Found ${summary.salesProcessed} unlinked sales records to process.`);
 
     if (salesSnapshot.empty) {
-      summary.details.push("No sales records found. Migration not needed.");
+      summary.details.push("No unlinked sales records found. Migration not needed or already complete for these.");
       return summary;
     }
 
     const salesByInvoiceNumber = new Map<string, Sale[]>();
 
-    // Group sales by their `Invoice` field (Shopify Order #)
     salesSnapshot.docs.forEach(doc => {
       const sale = { id: doc.id, ...doc.data() } as Sale;
-      if (sale.Invoice && !sale.invoiceId) { // Process only if Invoice # exists and not already linked to a Firestore invoice
+      if (sale.Invoice) { // We need the Shopify Order # (stored in sale.Invoice)
         const salesGroup = salesByInvoiceNumber.get(sale.Invoice) || [];
         salesGroup.push(sale);
         salesByInvoiceNumber.set(sale.Invoice, salesGroup);
+      } else {
+        summary.details.push(`Skipping sale ID ${sale.id} as it has no 'Invoice' (Shopify Order #) field.`);
       }
     });
 
-    summary.details.push(`Grouped sales into ${salesByInvoiceNumber.size} potential invoices.`);
+    summary.details.push(`Grouped unlinked sales into ${salesByInvoiceNumber.size} potential new invoices.`);
 
-    for (const [invoiceNum, salesGroup] of salesByInvoiceNumber.entries()) {
-      if (!invoiceNum.startsWith('SH-')) { // Skip if not a Shopify-like invoice number, or adjust as needed
-        summary.details.push(`Skipping invoice number "${invoiceNum}" as it doesn't appear to be a Shopify order number (missing SH- prefix).`);
-        continue;
+    for (const [originalInvoiceNum, salesGroup] of salesByInvoiceNumber.entries()) {
+      // Format the invoice number consistently (SH-XXXX) to use as Document ID
+      let tempOrderName = originalInvoiceNum;
+      if (tempOrderName.toUpperCase().startsWith('SH-')) { tempOrderName = tempOrderName.substring(3); }
+      tempOrderName = tempOrderName.replace(/^[0-9]+[.\-_ ]\s*|^#(order\s*#|order\s*|#)?/i, '').trim();
+      let coreOrderNumber = tempOrderName;
+      if (/^[0-9]+$/.test(coreOrderNumber) && coreOrderNumber.length === 5 && coreOrderNumber.startsWith('2')) {
+          coreOrderNumber = coreOrderNumber.substring(1);
       }
+      const formattedFirestoreInvoiceId = `SH-${coreOrderNumber}`;
 
-      const existingInvoiceQuery = await invoicesRef.where('invoiceNumber', '==', invoiceNum).limit(1).get();
-      if (!existingInvoiceQuery.empty) {
-        summary.details.push(`Invoice ${invoiceNum} already exists. Skipping creation.`);
-        // Optionally, still update sales items with the existing invoiceId
-        const existingInvoiceId = existingInvoiceQuery.docs[0].id;
+      const invoiceDocRef = invoicesRef.doc(formattedFirestoreInvoiceId);
+      const existingInvoiceSnap = await invoiceDocRef.get();
+
+      if (existingInvoiceSnap.exists) {
+        summary.details.push(`Invoice ${formattedFirestoreInvoiceId} already exists. Linking sales to it.`);
         for (const sale of salesGroup) {
-            if(!sale.invoiceId) { // Only update if not already linked
-                batch.update(salesRef.doc(sale.id), { invoiceId: existingInvoiceId, updatedAt: FieldValue.serverTimestamp() });
-                operationsInBatch++;
-                summary.salesUpdatedWithInvoiceId++;
-                if (operationsInBatch >= MAX_OPS) { await batch.commit(); batch = adminDb.batch(); operationsInBatch = 0; }
-            }
+            batch.update(salesRef.doc(sale.id), { invoiceId: formattedFirestoreInvoiceId, updatedAt: FieldValue.serverTimestamp() });
+            operationsInBatch++;
+            summary.salesUpdatedWithInvoiceId++;
+            if (operationsInBatch >= MAX_OPS) { await batch.commit(); batch = adminDb.batch(); operationsInBatch = 0; }
         }
         continue;
       }
 
       const firstSale = salesGroup[0];
       const invoiceItems: InvoiceItem[] = salesGroup.map(s => ({
-        itemName: s.Item || 'Unknown Item',
+        itemName: s.Item || 'Unknown Item from Sale',
         itemSku: s.SKU || undefined,
         itemQuantity: s.Quantity || 0,
         itemPricePerUnit: (s.Price && s.Quantity && s.Quantity > 0) ? parseFloat((s.Price / s.Quantity).toFixed(2)) : (s.Price || 0),
@@ -587,37 +578,35 @@ export async function migrateExistingSalesToInvoices() {
       }));
 
       const subtotal = invoiceItems.reduce((acc, item) => acc + (item.lineItemTotal || 0), 0);
-      // Assuming no tax info in old sales records for simplicity, or try to derive if possible
-      const taxAmount = 0; 
-      const totalAmount = subtotal + taxAmount;
+      const taxAmount = firstSale.Tax || 0; 
+      const totalAmount = subtotal + taxAmount; // Or use firstSale.Revenue if more appropriate and available
 
       const newInvoiceData: Omit<Invoice, 'id'> = {
-        invoiceNumber: invoiceNum,
-        invoiceDate: firstSale.Date || new Date().toISOString(), // Use sale date or fallback
+        invoiceNumber: formattedFirestoreInvoiceId, // This is the doc ID
+        invoiceDate: firstSale.Date || new Date().toISOString(), 
         customerName: firstSale.Customer || 'Unknown Customer',
-        customerId: firstSale.customerId || undefined,
+        customerId: firstSale.customerId || firstSale.customer_ID || undefined,
         items: invoiceItems,
         subtotal: parseFloat(subtotal.toFixed(2)),
         taxAmount: parseFloat(taxAmount.toFixed(2)),
         totalAmount: parseFloat(totalAmount.toFixed(2)),
-        invoiceStatus: 'Paid', // Assume paid for past sales
-        totalAllocatedPayment: parseFloat(totalAmount.toFixed(2)),
-        totalBalance: 0,
-        channel: 'Shopify', // Assuming these are from Shopify
+        invoiceStatus: 'Paid', 
+        totalAllocatedPayment: parseFloat((firstSale.allocated_payment ?? totalAmount).toFixed(2)), // Use existing payment if available
+        totalBalance: parseFloat((totalAmount - (firstSale.allocated_payment ?? totalAmount)).toFixed(2)),
+        channel: firstSale.channel || 'Shopify', // Assume Shopify if not specified
         createdAt: firstSale.createdAt || FieldValue.serverTimestamp() as any,
         updatedAt: FieldValue.serverTimestamp() as any,
-        // shopifyOrderId might be missing if not in old sales data.
+        // shopifyOrderId would ideally be present on the Sale record if it came from Shopify.
+        // If not, this field might remain undefined for migrated invoices.
       };
 
-      const newInvoiceRef = invoicesRef.doc();
-      batch.set(newInvoiceRef, newInvoiceData);
+      batch.set(invoiceDocRef, newInvoiceData);
       operationsInBatch++;
       summary.invoicesCreated++;
-      summary.details.push(`Staged new invoice ${invoiceNum} with ID ${newInvoiceRef.id}.`);
+      summary.details.push(`Staged new invoice ${formattedFirestoreInvoiceId}.`);
 
-      // Update sales items with the new invoiceId
       for (const sale of salesGroup) {
-        batch.update(salesRef.doc(sale.id), { invoiceId: newInvoiceRef.id, updatedAt: FieldValue.serverTimestamp() });
+        batch.update(salesRef.doc(sale.id), { invoiceId: formattedFirestoreInvoiceId, updatedAt: FieldValue.serverTimestamp() });
         operationsInBatch++;
         summary.salesUpdatedWithInvoiceId++;
         if (operationsInBatch >= MAX_OPS) { await batch.commit(); batch = adminDb.batch(); operationsInBatch = 0; }
