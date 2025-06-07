@@ -1,4 +1,3 @@
-
 'use client';
 
 import { useState, useMemo } from 'react';
@@ -6,8 +5,14 @@ import type { ShopifyOrderCacheItem, ShopifyTransaction } from '@/lib/types';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { MoreHorizontal, Eye, FileText, Loader2, AlertTriangle, ShoppingBag, Search, ChevronDown, ChevronUp } from 'lucide-react';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger
+} from '@/components/ui/dropdown-menu';
+import { MoreHorizontal, Eye, FileText, Loader2, AlertTriangle, ShoppingBag, Search, ChevronDown, ChevronUp, ExternalLink } from 'lucide-react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Input } from '@/components/ui/input';
 import { format, parseISO, isValid } from 'date-fns';
@@ -23,16 +28,19 @@ function safeFormatDate(dateString?: string | null): string {
   if (!dateString) return 'N/A';
   try {
     const date = parseISO(dateString);
-    return isValid(date) ? format(date, 'PPpp') : 'Invalid Date'; // e.g., Jul 20, 2024, 2:30 PM
+    return isValid(date) ? format(date, 'PPpp') : 'Invalid Date';
   } catch {
     return 'Date Error';
   }
 }
 
-function formatShopifyMoney(moneySet?: { shopMoney: { amount: string, currencyCode: string } } | null ): string {
+// Accounting style money format, no USD or $ prefix
+function formatShopifyMoney(moneySet?: { shopMoney: { amount: string } } | null): string {
   if (!moneySet || !moneySet.shopMoney) return 'N/A';
   const amount = parseFloat(moneySet.shopMoney.amount);
-  return isNaN(amount) ? 'N/A' : `$${amount.toFixed(2)} ${moneySet.shopMoney.currencyCode}`;
+  return isNaN(amount)
+    ? 'N/A'
+    : amount.toLocaleString(undefined, { style: 'decimal', minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 type SortKey = 'name' | 'createdAt' | 'totalPriceSet';
@@ -43,6 +51,15 @@ interface SortConfig {
   direction: SortDirection;
 }
 
+// Get Shopify admin order URL
+function getShopifyOrderUrl(order: ShopifyOrderCacheItem) {
+  // If using Shopify Plus, use the plus domain
+  // Otherwise, use the admin.shopify.com format
+  const orderId = order.id?.split('/').pop();
+  return orderId
+    ? `https://admin.shopify.com/store/caviar-and-chevre/orders/${orderId}`
+    : '#';
+}
 
 export function ShopifySalesTable({ orders, isLoading, error: parentError }: ShopifySalesTableProps) {
   const [searchTerm, setSearchTerm] = useState('');
@@ -50,19 +67,21 @@ export function ShopifySalesTable({ orders, isLoading, error: parentError }: Sho
   const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
   const [sortConfig, setSortConfig] = useState<SortConfig | null>({ key: 'createdAt', direction: 'descending' });
 
-
   const filteredOrders = useMemo(() => {
     return (orders || []).filter(order => {
-        const term = searchTerm.toLowerCase();
-        return (
-            order.name?.toLowerCase().includes(term) ||
-            order.email?.toLowerCase().includes(term) ||
-            order.customer?.firstName?.toLowerCase().includes(term) ||
-            order.customer?.lastName?.toLowerCase().includes(term) ||
-            order.displayFinancialStatus?.toLowerCase().includes(term) ||
-            order.displayFulfillmentStatus?.toLowerCase().includes(term) ||
-            (order.lineItems?.edges?.some(li => li.node.title.toLowerCase().includes(term) || li.node.sku?.toLowerCase().includes(term)))
-        );
+      const term = searchTerm.toLowerCase();
+      return (
+        order.name?.toLowerCase().includes(term) ||
+        order.email?.toLowerCase().includes(term) ||
+        order.customer?.firstName?.toLowerCase().includes(term) ||
+        order.customer?.lastName?.toLowerCase().includes(term) ||
+        order.displayFinancialStatus?.toLowerCase().includes(term) ||
+        order.displayFulfillmentStatus?.toLowerCase().includes(term) ||
+        (order.lineItems?.edges?.some(li =>
+          li.node.title.toLowerCase().includes(term) ||
+          li.node.sku?.toLowerCase().includes(term)
+        ))
+      );
     });
   }, [orders, searchTerm]);
 
@@ -80,10 +99,8 @@ export function ShopifySalesTable({ orders, isLoading, error: parentError }: Sho
           valA = a[sortConfig.key];
           valB = b[sortConfig.key];
         }
-        
         if (valA === undefined || valA === null) valA = sortConfig.direction === 'ascending' ? Infinity : -Infinity;
         if (valB === undefined || valB === null) valB = sortConfig.direction === 'ascending' ? Infinity : -Infinity;
-
 
         if (valA < valB) return sortConfig.direction === 'ascending' ? -1 : 1;
         if (valA > valB) return sortConfig.direction === 'ascending' ? 1 : -1;
@@ -103,9 +120,10 @@ export function ShopifySalesTable({ orders, isLoading, error: parentError }: Sho
 
   const getSortIndicator = (key: SortKey) => {
     if (sortConfig?.key !== key) return <ChevronDown className="h-3 w-3 opacity-30 group-hover:opacity-100" />;
-    return sortConfig.direction === 'ascending' ? <ChevronUp className="h-3 w-3 text-primary" /> : <ChevronDown className="h-3 w-3 text-primary" />;
+    return sortConfig.direction === 'ascending'
+      ? <ChevronUp className="h-3 w-3 text-primary" />
+      : <ChevronDown className="h-3 w-3 text-primary" />;
   };
-
 
   const handleViewDetails = (order: ShopifyOrderCacheItem) => {
     setSelectedOrder(order);
@@ -130,9 +148,9 @@ export function ShopifySalesTable({ orders, isLoading, error: parentError }: Sho
       </Alert>
     );
   }
-  
+
   if (!isLoading && !parentError && (!orders || orders.length === 0)) {
-     return (
+    return (
       <div className="text-center py-10 text-muted-foreground">
         <ShoppingBag className="mx-auto h-12 w-12 text-gray-400 mb-4" />
         <h3 className="text-xl font-semibold">No Shopify Orders Found in Cache</h3>
@@ -141,23 +159,23 @@ export function ShopifySalesTable({ orders, isLoading, error: parentError }: Sho
       </div>
     );
   }
-  
-  const colSpan = 7; // Order #, Date, Customer, Payment, Fulfillment, Total, Actions
+
+  const colSpan = 7;
 
   return (
     <div className="space-y-4">
-        <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400" />
-            <Input
-                placeholder="Search Orders (e.g., Order #, Customer, Email, Status, Item...)"
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full max-w-xl pl-10 pr-4 py-2 border-input rounded-full focus:ring-primary focus:border-primary"
-            />
+      <div className="relative">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400" />
+        <Input
+          placeholder="Search Orders (e.g., Order #, Customer, Email, Status, Item...)"
+          value={searchTerm}
+          onChange={(e) => setSearchTerm(e.target.value)}
+          className="w-full max-w-xl pl-10 pr-4 py-2 border-input rounded-full focus:ring-primary focus:border-primary"
+        />
       </div>
       <div className="overflow-x-auto rounded-lg border border-border">
         <Table className="min-w-full divide-y divide-border">
-            <TableHeader className="bg-muted/50">
+          <TableHeader className="bg-muted/50">
             <TableRow>
               <TableHead className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider cursor-pointer group" onClick={() => requestSort('name')}>
                 <div className="flex items-center">Order # {getSortIndicator('name')}</div>
@@ -169,67 +187,97 @@ export function ShopifySalesTable({ orders, isLoading, error: parentError }: Sho
               <TableHead className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">Payment</TableHead>
               <TableHead className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">Fulfillment</TableHead>
               <TableHead className="px-4 py-3 text-right text-xs font-medium text-muted-foreground uppercase tracking-wider cursor-pointer group" onClick={() => requestSort('totalPriceSet')}>
-                 <div className="flex items-center justify-end">Total {getSortIndicator('totalPriceSet')}</div>
+                <div className="flex items-center justify-end">Total {getSortIndicator('totalPriceSet')}</div>
               </TableHead>
               <TableHead className="px-4 py-3 text-right text-xs font-medium text-muted-foreground uppercase tracking-wider">Actions</TableHead>
             </TableRow>
-            </TableHeader>
-            <TableBody className="bg-background divide-y divide-border">
-            {sortedOrders.length > 0 ? sortedOrders.map((order) => (
+          </TableHeader>
+          <TableBody className="bg-background divide-y divide-border">
+            {sortedOrders.length > 0 ? sortedOrders.map((order) => {
+              // Order number formatting
+              let orderNumber = order.name
+                ? `SH-${order.name.replace(/^#/, '')}`
+                : 'N/A';
+
+              const shopifyOrderUrl = getShopifyOrderUrl(order);
+
+              return (
                 <TableRow key={order.id} className="hover:bg-muted/50 transition-colors">
-                <TableCell className="px-4 py-3 whitespace-nowrap text-sm font-medium text-primary hover:underline cursor-pointer" onClick={() => handleViewDetails(order)}>{order.name}</TableCell>
-                <TableCell className="px-4 py-3 whitespace-nowrap text-sm text-muted-foreground">{safeFormatDate(order.createdAt)}</TableCell>
-                <TableCell className="px-4 py-3 whitespace-nowrap text-sm text-muted-foreground">
-                    {order.customer ? `${order.customer.firstName || ''} ${order.customer.lastName || ''}`.trim() || order.email || 'N/A' : order.email || 'N/A'}
-                </TableCell>
-                <TableCell className="px-4 py-3 whitespace-nowrap text-sm">
+                  <TableCell
+                    className="px-4 py-3 whitespace-nowrap text-sm font-mono font-medium text-primary hover:underline cursor-pointer"
+                    onClick={() => handleViewDetails(order)}
+                  >
+                    {orderNumber}
+                  </TableCell>
+                  <TableCell className="px-4 py-3 whitespace-nowrap text-sm text-muted-foreground">{safeFormatDate(order.createdAt)}</TableCell>
+                  <TableCell className="px-4 py-3 whitespace-nowrap text-sm text-muted-foreground">
+                    {order.customer
+                      ? `${order.customer.firstName || ''} ${order.customer.lastName || ''}`.trim() || order.email || 'N/A'
+                      : order.email || 'N/A'}
+                  </TableCell>
+                  <TableCell className="px-4 py-3 whitespace-nowrap text-sm">
                     <Badge variant={order.displayFinancialStatus === 'PAID' ? 'default' : order.displayFinancialStatus === 'PENDING' ? 'secondary' : 'outline'}>
-                    {order.displayFinancialStatus || 'N/A'}
+                      {order.displayFinancialStatus || 'N/A'}
                     </Badge>
-                </TableCell>
-                <TableCell className="px-4 py-3 whitespace-nowrap text-sm">
+                  </TableCell>
+                  <TableCell className="px-4 py-3 whitespace-nowrap text-sm">
                     <Badge variant={order.displayFulfillmentStatus === 'FULFILLED' ? 'default' : order.displayFulfillmentStatus === 'UNFULFILLED' ? 'secondary' : 'outline'}>
-                    {order.displayFulfillmentStatus || 'N/A'}
+                      {order.displayFulfillmentStatus || 'N/A'}
                     </Badge>
-                </TableCell>
-                <TableCell className="px-4 py-3 whitespace-nowrap text-sm text-muted-foreground text-right">{formatShopifyMoney(order.totalPriceSet)}</TableCell>
-                <TableCell className="px-4 py-3 whitespace-nowrap text-sm text-muted-foreground text-right">
+                  </TableCell>
+                  <TableCell className="px-4 py-3 whitespace-nowrap text-sm text-muted-foreground text-right" style={{ fontVariantNumeric: "tabular-nums" }}>
+                    {formatShopifyMoney(order.totalPriceSet)}
+                  </TableCell>
+                  <TableCell className="px-4 py-3 whitespace-nowrap text-sm text-muted-foreground text-right">
                     <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
+                      <DropdownMenuTrigger asChild>
                         <Button variant="ghost" className="h-8 w-8 p-0">
-                        <span className="sr-only">Open menu</span>
-                        <MoreHorizontal className="h-4 w-4" />
+                          <span className="sr-only">Open menu</span>
+                          <MoreHorizontal className="h-4 w-4" />
                         </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
                         <DropdownMenuLabel>Actions</DropdownMenuLabel>
                         <DropdownMenuItem onClick={() => handleViewDetails(order)}>
-                        <Eye className="mr-2 h-4 w-4" /> View Details
+                          <Eye className="mr-2 h-4 w-4" /> View Details
                         </DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => alert(`Create Invoice for ${order.name} (to be implemented)`)}>
-                        <FileText className="mr-2 h-4 w-4" /> Create Invoice
+                        <DropdownMenuItem asChild>
+                          <a href={shopifyOrderUrl} target="_blank" rel="noopener noreferrer">
+                            <ExternalLink className="mr-2 h-4 w-4" /> View in Shopify
+                          </a>
                         </DropdownMenuItem>
-                    </DropdownMenuContent>
+                      </DropdownMenuContent>
                     </DropdownMenu>
+                  </TableCell>
+                </TableRow>
+              );
+            }) : (
+              <TableRow>
+                <TableCell colSpan={colSpan} className="text-center text-muted-foreground py-10">
+                  {orders.length === 0 ? "No Shopify orders found in cache." : "No orders match your search."}
                 </TableCell>
-                </TableRow>
-            )) : (
-                 <TableRow>
-                    <TableCell colSpan={colSpan} className="text-center text-muted-foreground py-10">
-                        {orders.length === 0 ? "No Shopify orders found in cache." : "No orders match your search."}
-                    </TableCell>
-                </TableRow>
+              </TableRow>
             )}
-            </TableBody>
+          </TableBody>
         </Table>
       </div>
       {selectedOrder && (
         <Dialog open={isDetailModalOpen} onOpenChange={setIsDetailModalOpen}>
           <DialogContent className="sm:max-w-2xl md:max-w-3xl lg:max-w-4xl max-h-[80vh] overflow-y-auto">
             <DialogHeader>
-              <DialogTitle>Order Details: {selectedOrder.name}</DialogTitle>
+              <DialogTitle>
+                Order Details: SH-{selectedOrder.name?.replace(/^#/, '')}
+                <a
+                  href={getShopifyOrderUrl(selectedOrder)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="ml-4 text-primary underline font-normal text-sm inline-flex items-center"
+                >
+                  <ExternalLink className="w-4 h-4 mr-1" /> View in Shopify
+                </a>
+              </DialogTitle>
               <DialogDescription>
-                Full details for Shopify Order {selectedOrder.name}, created at {safeFormatDate(selectedOrder.createdAt)}.
+                Full details for Shopify Order SH-{selectedOrder.name?.replace(/^#/, '')}, created at {safeFormatDate(selectedOrder.createdAt)}.
               </DialogDescription>
             </DialogHeader>
             <div className="grid gap-4 py-4 text-sm">
@@ -256,17 +304,24 @@ export function ShopifySalesTable({ orders, isLoading, error: parentError }: Sho
                   </div>
                 </>
               )}
-               {selectedOrder.note && <div className="mt-2"><strong>Notes:</strong> <p className="whitespace-pre-wrap bg-muted/50 p-2 rounded-md">{selectedOrder.note}</p></div>}
-               {selectedOrder.tags && selectedOrder.tags.length > 0 && <div className="mt-2"><strong>Tags:</strong> {selectedOrder.tags.map(tag => <Badge key={tag} variant="secondary" className="mr-1">{tag}</Badge>)}</div>}
+              {selectedOrder.note && <div className="mt-2"><strong>Notes:</strong> <p className="whitespace-pre-wrap bg-muted/50 p-2 rounded-md">{selectedOrder.note}</p></div>}
+              {selectedOrder.tags && selectedOrder.tags.length > 0 && <div className="mt-2"><strong>Tags:</strong> {selectedOrder.tags.map(tag => <Badge key={tag} variant="secondary" className="mr-1">{tag}</Badge>)}</div>}
 
               <h4 className="font-semibold mt-4 mb-1">Line Items ({selectedOrder.lineItems?.edges?.length || 0})</h4>
               <div className="border rounded-md max-h-60 overflow-y-auto">
                 <Table className="text-xs">
-                  <TableHeader><TableRow><TableHead>Product</TableHead><TableHead>SKU</TableHead><TableHead className="text-center">Qty</TableHead><TableHead className="text-right">Total</TableHead></TableRow></TableHeader>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Product</TableHead>
+                      <TableHead>SKU</TableHead>
+                      <TableHead className="text-center">Qty</TableHead>
+                      <TableHead className="text-right">Total</TableHead>
+                    </TableRow>
+                  </TableHeader>
                   <TableBody>
                     {selectedOrder.lineItems?.edges?.map(itemEdge => (
                       <TableRow key={itemEdge.node.id}>
-                        <TableCell className="font-medium">{itemEdge.node.title}{itemEdge.node.variantTitle ? ` (${itemEdge.node.variantTitle})` : ''}<br/><span className="text-muted-foreground text-xs">{itemEdge.node.vendor || ''}</span></TableCell>
+                        <TableCell className="font-medium">{itemEdge.node.title}{itemEdge.node.variantTitle ? ` (${itemEdge.node.variantTitle})` : ''}<br /><span className="text-muted-foreground text-xs">{itemEdge.node.vendor || ''}</span></TableCell>
                         <TableCell>{itemEdge.node.sku || 'N/A'}</TableCell>
                         <TableCell className="text-center">{itemEdge.node.quantity}</TableCell>
                         <TableCell className="text-right">{formatShopifyMoney(itemEdge.node.discountedTotalSet || itemEdge.node.originalTotalSet)}</TableCell>
@@ -275,26 +330,36 @@ export function ShopifySalesTable({ orders, isLoading, error: parentError }: Sho
                   </TableBody>
                 </Table>
               </div>
-              
+
               {selectedOrder.transactions && selectedOrder.transactions.length > 0 && (
                 <>
-                <h4 className="font-semibold mt-4 mb-1">Transactions ({selectedOrder.transactions.length})</h4>
-                 <div className="border rounded-md max-h-48 overflow-y-auto">
+                  <h4 className="font-semibold mt-4 mb-1">Transactions ({selectedOrder.transactions.length})</h4>
+                  <div className="border rounded-md max-h-48 overflow-y-auto">
                     <Table className="text-xs">
-                    <TableHeader><TableRow><TableHead>Date</TableHead><TableHead>Kind</TableHead><TableHead>Status</TableHead><TableHead>Gateway</TableHead><TableHead className="text-right">Amount</TableHead></TableRow></TableHeader>
-                    <TableBody>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Date</TableHead>
+                          <TableHead>Kind</TableHead>
+                          <TableHead>Status</TableHead>
+                          <TableHead>Gateway</TableHead>
+                          <TableHead className="text-right">Amount</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
                         {selectedOrder.transactions.map((transaction: ShopifyTransaction) => (
-                        <TableRow key={transaction.id}>
+                          <TableRow key={transaction.id}>
                             <TableCell>{safeFormatDate(transaction.processedAt)}</TableCell>
                             <TableCell>{transaction.kind}</TableCell>
-                            <TableCell><Badge variant={transaction.status === 'SUCCESS' ? 'default' : transaction.status === 'PENDING' ? 'secondary' : 'destructive'}>{transaction.status}</Badge></TableCell>
+                            <TableCell>
+                              <Badge variant={transaction.status === 'SUCCESS' ? 'default' : transaction.status === 'PENDING' ? 'secondary' : 'destructive'}>{transaction.status}</Badge>
+                            </TableCell>
                             <TableCell>{transaction.gateway}</TableCell>
                             <TableCell className="text-right">{formatShopifyMoney(transaction.amountSet)}</TableCell>
-                        </TableRow>
+                          </TableRow>
                         ))}
-                    </TableBody>
+                      </TableBody>
                     </Table>
-                </div>
+                  </div>
                 </>
               )}
 
@@ -305,4 +370,3 @@ export function ShopifySalesTable({ orders, isLoading, error: parentError }: Sho
     </div>
   );
 }
-
