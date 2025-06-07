@@ -4,13 +4,46 @@
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import { Customer, Sale } from '@/lib/types';
-import { format } from 'date-fns';
+import type { Customer, Sale } from '@/lib/types';
+import { format, parseISO, isValid } from 'date-fns';
 import { DollarSign, ShoppingBag } from 'lucide-react';
+import { Timestamp } from 'firebase/firestore'; // Added for type safety
 
 interface CustomerDetailsProps {
   customer: Customer;
   sales: Sale[];
+}
+
+function safeFormatSaleDate(dateInput?: string | { seconds: number; nanoseconds: number } | Timestamp): string {
+  if (!dateInput) return 'N/A';
+  try {
+    let dateToFormat: Date;
+    if (dateInput instanceof Timestamp) {
+      dateToFormat = dateInput.toDate();
+    } else if (typeof dateInput === 'string') {
+      // Try parsing as ISO string first
+      const parsedDate = parseISO(dateInput);
+      if (!isValid(parsedDate)) {
+        // Fallback for other common date string formats if ISO fails
+        const genericParsedDate = new Date(dateInput);
+        if (!isValid(genericParsedDate)) return 'Invalid Date Str';
+        dateToFormat = genericParsedDate;
+      } else {
+        dateToFormat = parsedDate;
+      }
+    } else if (dateInput && typeof (dateInput as any).seconds === 'number' && typeof (dateInput as any).nanoseconds === 'number') {
+        // This handles the case where the object is { seconds: ..., nanoseconds: ... } but not an actual Timestamp instance
+        dateToFormat = new Timestamp((dateInput as any).seconds, (dateInput as any).nanoseconds).toDate();
+    } else {
+      return 'Invalid Date Obj';
+    }
+
+    if (!isValid(dateToFormat)) return 'Invalid Date Val';
+    return format(dateToFormat, 'PPP'); // Format as 'Jul 20, 2024'
+  } catch (error) {
+    console.error("Error formatting date in CustomerDetails:", dateInput, error);
+    return 'Date Error';
+  }
 }
 
 export function CustomerDetails({ customer, sales }: CustomerDetailsProps) {
@@ -75,7 +108,7 @@ export function CustomerDetails({ customer, sales }: CustomerDetailsProps) {
               {sales.length > 0 ? (
                 sales.map((sale) => (
                   <TableRow key={sale.id}>
-                    <TableCell>{sale.Date ? format(new Date(sale.Date), 'PPP') : 'N/A'}</TableCell>
+                    <TableCell>{safeFormatSaleDate(sale.Date)}</TableCell>
                     <TableCell>{sale.Item || 'N/A'}</TableCell>
                     <TableCell>{sale.SKU || 'N/A'}</TableCell>
                     <TableCell className="text-right">{sale.Quantity || 0}</TableCell>
