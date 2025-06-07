@@ -4,7 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { ShopifySalesTable } from '@/components/shopify/shopify-sales-table';
-import { fetchAndCacheShopifyOrders, getCachedShopifyOrders, getShopifyOrderSyncState } from '@/lib/shopify-order-service';
+import { fetchAndCacheShopifyOrders, getCachedShopifyOrders, getShopifyOrderSyncState } from '@/lib/shopify-order-service'; // Added getShopifyOrderSyncState
 import { getAdminAuth, admin } from '@/lib/firebase-admin'; // Use getAdminAuth
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
@@ -43,10 +43,25 @@ export default async function ShopifySalesPage({
     // isAdminUser = true; // Uncomment this line ONLY for temporary local testing if admin check is problematic
   }
   
-  if (!isAdminUser && process.env.NODE_ENV === 'production') {
-    // Redirect to login or show access denied for production
-    // For now, just returning an alert to avoid full redirect loop during setup
-     return (
+  let actionResult: { success: boolean; message: string; details?: string[] } | null = null;
+  let initialOrders: ShopifyOrderCacheItem[] = [];
+  let initialError: string | null = null;
+  let syncState: ShopifyOrderSyncState | null = null;
+
+  // Read searchParams *after* initial async operations.
+  const action =
+    typeof searchParams?.action === 'string'
+      ? searchParams.action
+      : Array.isArray(searchParams?.action)
+        ? searchParams.action[0]
+        : undefined;
+
+  if (!isAdminUser && process.env.NODE_ENV === 'production' && action === 'refresh_orders') {
+    // If not admin in prod, and trying to refresh, block early
+    actionResult = { success: false, message: "Admin privileges required to refresh orders." };
+  } else if (!isAdminUser && process.env.NODE_ENV === 'production') {
+    // If not admin in prod and just viewing page, show access denied (or redirect)
+    return (
       <div className="space-y-6 p-4">
         <Alert variant="destructive">
           <AlertTriangle className="h-4 w-4" />
@@ -63,35 +78,19 @@ export default async function ShopifySalesPage({
   }
 
 
-  let actionResult: { success: boolean; message: string; details?: string[] } | null = null;
-  let initialOrders: ShopifyOrderCacheItem[] = [];
-  let initialError: string | null = null;
-  let syncState: ShopifyOrderSyncState | null = null;
-
-  // Access searchParams.action *after* initial async operations (like cookies and admin check)
-  const action =
-    typeof searchParams?.action === 'string'
-      ? searchParams.action
-      : Array.isArray(searchParams?.action)
-        ? searchParams.action[0]
-        : undefined;
-
-  if (action === 'refresh_orders') {
-    // Ensure admin check passes before performing the action, even in dev if not bypassing fully
-    if (!isAdminUser && process.env.NODE_ENV === 'production') {
-       actionResult = { success: false, message: "Admin privileges required to refresh." };
-    } else {
-      // If in dev and bypassing strict check, allow refresh. In prod, admin check must pass.
-      if (isAdminUser || (process.env.NODE_ENV !== 'production' && !isAdminUser /* implied dev bypass for action */)) {
-        const result = await fetchAndCacheShopifyOrders({ forceFullSync: true });
+  if (action === 'refresh_orders' && (!actionResult || actionResult.success)) { // Proceed if not already blocked by admin check
+    // Check admin privileges again, especially if dev mode bypass was active
+    if (isAdminUser || (process.env.NODE_ENV !== 'production' && !isAdminUser /* implied dev bypass for action */)) {
+        console.log("ShopifySalesPage: 'refresh_orders' action triggered. Calling fetchAndCacheShopifyOrders without forceFullSync.");
+        const result = await fetchAndCacheShopifyOrders(); // Removed forceFullSync: true
         actionResult = {
             success: result.success,
-            message: result.error || `Fetched ${result.fetchedCount}, Cached ${result.cachedCount}, Deleted ${result.deletedCount} orders.`,
+            message: result.error || `Fetched ${result.fetchedCount}, Cached ${result.cachedCount}, Deleted ${result.deletedCount} orders. Sync type: ${result.syncTypeUsed || 'N/A'}.`,
             details: result.details
         };
-      } else {
-         actionResult = { success: false, message: "Admin privileges required for refresh (strict mode)." };
-      }
+    } else {
+        // This case should ideally be caught by the earlier admin check for production
+        actionResult = { success: false, message: "Admin privileges required for refresh (strict mode)." };
     }
   }
 
@@ -113,9 +112,9 @@ export default async function ShopifySalesPage({
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row justify-between items-center gap-4">
         <h1 className="text-3xl font-bold font-headline tracking-tight">Shopify Sales Orders</h1>
-        <form action="/shopify-sales" method="GET"> {/* Changed to GET and absolute path */}
+        <form action="/shopify-sales" method="GET">
           <input type="hidden" name="action" value="refresh_orders" />
-          <Button type="submit"> {/* Removed name/value from button */}
+          <Button type="submit">
             <RefreshCw className="mr-2 h-4 w-4" /> Refresh Shopify Orders Cache
           </Button>
         </form>
@@ -136,7 +135,7 @@ export default async function ShopifySalesPage({
         </Alert>
       )}
 
-      {initialError && !actionResult && ( // Only show initial load error if no action was just performed
+      {initialError && !actionResult && ( 
         <Alert variant="destructive" className="mt-4">
           <AlertTriangle className="h-4 w-4" />
           <AlertTitle>Error Loading Orders</AlertTitle>
@@ -159,7 +158,7 @@ export default async function ShopifySalesPage({
         <CardContent>
           <ShopifySalesTable
             orders={initialOrders}
-            isLoading={false} // Loading state for this initial display can be managed if needed
+            isLoading={false} 
             error={initialError && !actionResult ? initialError : null}
           />
         </CardContent>

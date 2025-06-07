@@ -19,7 +19,7 @@ interface ShopifyGraphQLOrdersResponse { /* ... as before ... */ }
 
 const ORDER_SYNC_STATE_DOC_ID = 'shopifyOrdersSyncState';
 const SHOPIFY_ORDER_CACHE_COLLECTION = 'shopifyOrderCache';
-const DEFAULT_ORDERS_PER_PAGE = 25; // Adjusted for potentially faster syncs, can be tuned
+const DEFAULT_ORDERS_PER_PAGE = 25; 
 
 export async function getShopifyOrderSyncState(): Promise<ShopifyOrderSyncState | null> {
   const adminDb = getAdminDb();
@@ -28,6 +28,7 @@ export async function getShopifyOrderSyncState(): Promise<ShopifyOrderSyncState 
     const docSnap = await syncStateRef.get();
     if (docSnap.exists) {
       const data = docSnap.data() as ShopifyOrderSyncState;
+      // Ensure timestamps are ISO strings if they are Firestore Timestamps
       if (data.lastOrderSyncTimestamp && typeof data.lastOrderSyncTimestamp !== 'string') {
         data.lastOrderSyncTimestamp = (data.lastOrderSyncTimestamp as unknown as Timestamp).toDate().toISOString();
       }
@@ -50,6 +51,7 @@ async function updateShopifyOrderSyncState(newState: Partial<ShopifyOrderSyncSta
     const syncStateRef = adminDb.collection('syncState').doc(ORDER_SYNC_STATE_DOC_ID);
     const updateData: { [key: string]: any } = { ...newState };
 
+    // Convert ISO string dates back to Firestore Timestamps for storage
     if (newState.lastOrderSyncTimestamp) {
       updateData.lastOrderSyncTimestamp = Timestamp.fromDate(new Date(newState.lastOrderSyncTimestamp));
     }
@@ -70,12 +72,13 @@ export async function fetchAndCacheShopifyOrders({
   limit = 0, 
 }: {
   forceFullSync?: boolean;
-  limit?: number; // 0 means no limit, fetch all based on sync type
+  limit?: number; 
 } = {}): Promise<{
   success: boolean;
   fetchedCount: number;
   cachedCount: number;
   deletedCount: number;
+  syncTypeUsed?: 'full' | 'delta';
   error?: string;
   details?: string[];
 }> {
@@ -104,25 +107,24 @@ export async function fetchAndCacheShopifyOrders({
     const syncStateErrorMsg = `Warning: Could not fetch sync state: ${(error as Error).message}. Proceeding with full sync.`;
     details.push(syncStateErrorMsg);
     console.warn(`Shopify Order Service: ${syncStateErrorMsg}`);
-    // Proceed with full sync if sync state fetch fails
   }
 
   let effectiveSyncType = forceFullSync || !syncState?.lastFullOrderSyncCompletionTimestamp ? 'full' : 'delta';
   let queryFilter: string | undefined = undefined;
+  const currentSyncOperationStartedAt = new Date().toISOString();
 
   if (effectiveSyncType === 'delta' && syncState?.lastOrderSyncTimestamp) {
     queryFilter = `updated_at:>'${syncState.lastOrderSyncTimestamp}'`;
     console.log(`Shopify Order Service: Determined DELTA SYNC. Fetching orders updated after: ${syncState.lastOrderSyncTimestamp}`);
     details.push(`Performing delta sync. Fetching orders updated after: ${syncState.lastOrderSyncTimestamp}`);
   } else {
-    effectiveSyncType = 'full'; 
-    const reason = forceFullSync ? 'forced by parameter' 
-                  : !syncState?.lastFullOrderSyncCompletionTimestamp ? 'no previous full sync recorded' 
-                  : 'delta conditions not met (e.g., no lastOrderSyncTimestamp)';
+    const reason = effectiveSyncType === 'full' ? (forceFullSync ? 'forced by parameter' : 'no previous full sync recorded')
+                   : 'Delta conditions not met (e.g., no lastOrderSyncTimestamp), falling back to full sync.';
+    effectiveSyncType = 'full'; // Ensure it's marked as full if delta conditions fail
     console.log(`Shopify Order Service: Determined FULL SYNC. Reason: ${reason}.`);
     details.push(`Performing full sync. Reason: ${reason}.`);
   }
-  const currentSyncOperationStartedAt = new Date().toISOString();
+  
 
   const ordersQuery = `
     query GetOrders($first: Int!, $after: String, $sortKey: OrderSortKeys, $reverse: Boolean, $query: String) {
@@ -165,7 +167,7 @@ export async function fetchAndCacheShopifyOrders({
               }
               pageInfo { hasNextPage endCursor }
             }
-            transactions(first: 10) { # Fetching as a direct list now
+            transactions(first: 10) {
               id
               kind
               status
@@ -200,15 +202,14 @@ export async function fetchAndCacheShopifyOrders({
          break;
       }
 
-
       console.log(`Shopify Order Service: Fetching page ${pageCount}. Cursor: ${currentCursor || 'N/A'}. Filter: ${queryFilter || 'None'}. Orders to fetch: ${ordersToFetchThisPage}`);
       details.push(`Fetching page ${pageCount} of orders. Orders per page: ${ordersToFetchThisPage}. Cursor: ${currentCursor || 'N/A'}. Filter: ${queryFilter || 'None'}`);
 
       const variables = {
         first: ordersToFetchThisPage,
         after: currentCursor,
-        sortKey: "UPDATED_AT", // Crucial for chronological processing with updated_at filter
-        reverse: false,       // False means ascending (oldest updates first)
+        sortKey: "UPDATED_AT", 
+        reverse: false,       
         query: queryFilter,
       };
 
@@ -245,8 +246,8 @@ export async function fetchAndCacheShopifyOrders({
         const shopifyOrder: ShopifyOrder = {
           ...orderNode,
           customer: orderNode.customer || undefined,
-          billingAddress: orderNode.billingAddress || undefined, // Field not in query, will be undefined
-          shippingAddress: orderNode.shippingAddress || undefined, // Field not in query, will be undefined
+          billingAddress: orderNode.billingAddress || undefined, 
+          shippingAddress: orderNode.shippingAddress || undefined, 
           lineItems: {
             edges: orderNode.lineItems.edges.map(liEdge => ({
               node: {
@@ -267,16 +268,16 @@ export async function fetchAndCacheShopifyOrders({
       currentCursor = pageInfo.endCursor;
     }
 
-    console.log(`Shopify Order Service: Fetching complete. Total orders fetched: ${allFetchedOrders.length}. Updating cache...`);
+    console.log(`Shopify Order Service: Fetching complete. Total orders fetched: ${allFetchedOrders.length}. Updating cache using effective sync type: ${effectiveSyncType}...`);
     const cacheResult = await updateShopifyOrderCacheInFirestore(allFetchedOrders, effectiveSyncType === 'full');
     details.push(`Firestore cache: ${cacheResult.countAddedOrUpdated} orders added/updated, ${cacheResult.countDeleted} deleted.`);
     console.log(`Shopify Order Service: Cache update complete. Added/Updated: ${cacheResult.countAddedOrUpdated}, Deleted: ${cacheResult.countDeleted}`);
 
     const newSyncStateUpdate: Partial<ShopifyOrderSyncState> = {
-      lastOrderSyncTimestamp: currentSyncOperationStartedAt, // Timestamp when this sync operation started
-      lastOrderEndCursor: currentCursor, // Store the last cursor successfully processed
+      lastOrderSyncTimestamp: currentSyncOperationStartedAt,
+      lastOrderEndCursor: currentCursor || undefined, // Use currentCursor from the loop
     };
-    if (effectiveSyncType === 'full' && !hasNextPage) { // Only update full sync completion if it was a full sync AND it completed all pages
+    if (effectiveSyncType === 'full' && !hasNextPage) { 
       newSyncStateUpdate.lastFullOrderSyncCompletionTimestamp = new Date().toISOString();
       console.log(`Shopify Order Service: Full sync completed successfully. Updated lastFullOrderSyncCompletionTimestamp.`);
     }
@@ -288,18 +289,19 @@ export async function fetchAndCacheShopifyOrders({
       fetchedCount: allFetchedOrders.length,
       cachedCount: cacheResult.countAddedOrUpdated,
       deletedCount: cacheResult.countDeleted,
+      syncTypeUsed: effectiveSyncType,
       details,
     };
 
   } catch (error: any) {
     console.warn('Shopify Order Service: CRITICAL ERROR in fetchAndCacheShopifyOrders:', error);
     details.push(`Error: ${error.message || String(error)}`);
-    // Do not update sync state on error to ensure the next attempt can retry correctly
     return {
       success: false,
-      fetchedCount: allFetchedOrders.length, // Orders fetched before error
-      cachedCount: 0, // Assume cache operation might not have completed or is rolled back
+      fetchedCount: allFetchedOrders.length, 
+      cachedCount: 0, 
       deletedCount: 0,
+      syncTypeUsed: effectiveSyncType,
       error: error.message || String(error),
       details,
     };
@@ -363,9 +365,8 @@ export async function updateShopifyOrderCacheInFirestore(
           const numericId = order.id.split('/').pop();
           if (numericId) {
             const docRef = cacheCollectionRef.doc(numericId);
-            // Deep clone and remove undefined values for Firestore compatibility
             const orderDataForFirestore = JSON.parse(JSON.stringify(order, (key, value) => value === undefined ? null : value));
-            batch.set(docRef, orderDataForFirestore, { merge: true }); // Use merge:true for updates
+            batch.set(docRef, orderDataForFirestore, { merge: true }); 
             countAddedOrUpdated++;
           }
         });
@@ -378,7 +379,7 @@ export async function updateShopifyOrderCacheInFirestore(
     
   } catch (error) {
     console.warn("Shopify Order Service: Error updating Firestore cache:", error);
-    throw error; // Re-throw to be caught by the caller
+    throw error; 
   }
 
   return { countAddedOrUpdated, countDeleted };
@@ -390,7 +391,7 @@ export async function getCachedShopifyOrders(): Promise<ShopifyOrderCacheItem[]>
     console.log("Shopify Order Service: Fetching cached Shopify orders from Firestore (limit 250, ordered by createdAt desc).");
     const snapshot = await adminDb
       .collection(SHOPIFY_ORDER_CACHE_COLLECTION)
-      .orderBy('createdAt', 'desc') // Note: Shopify's `createdAt` for orders.
+      .orderBy('createdAt', 'desc') 
       .limit(250) 
       .get();
     if (!snapshot.empty) {
@@ -402,8 +403,6 @@ export async function getCachedShopifyOrders(): Promise<ShopifyOrderCacheItem[]>
     return [];
   } catch (error) {
     console.warn("Shopify Order Service: Error fetching cached Shopify orders:", error);
-    throw error; // Re-throw to be caught by the caller
+    throw error; 
   }
 }
-
-    
