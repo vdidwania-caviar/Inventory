@@ -2,7 +2,7 @@
 'use client';
 
 import { useState, useMemo } from 'react';
-import type { ShopifyOrderCacheItem } from '@/lib/types';
+import type { ShopifyOrderCacheItem, ShopifyTransaction } from '@/lib/types';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -276,20 +276,20 @@ export function ShopifySalesTable({ orders, isLoading, error: parentError }: Sho
                 </Table>
               </div>
               
-              {selectedOrder.transactions && selectedOrder.transactions.edges.length > 0 && (
+              {selectedOrder.transactions && selectedOrder.transactions.length > 0 && (
                 <>
-                <h4 className="font-semibold mt-4 mb-1">Transactions ({selectedOrder.transactions.edges.length})</h4>
+                <h4 className="font-semibold mt-4 mb-1">Transactions ({selectedOrder.transactions.length})</h4>
                  <div className="border rounded-md max-h-48 overflow-y-auto">
                     <Table className="text-xs">
                     <TableHeader><TableRow><TableHead>Date</TableHead><TableHead>Kind</TableHead><TableHead>Status</TableHead><TableHead>Gateway</TableHead><TableHead className="text-right">Amount</TableHead></TableRow></TableHeader>
                     <TableBody>
-                        {selectedOrder.transactions.edges.map(txEdge => (
-                        <TableRow key={txEdge.node.id}>
-                            <TableCell>{safeFormatDate(txEdge.node.processedAt)}</TableCell>
-                            <TableCell>{txEdge.node.kind}</TableCell>
-                            <TableCell><Badge variant={txEdge.node.status === 'SUCCESS' ? 'default' : txEdge.node.status === 'PENDING' ? 'secondary' : 'destructive'}>{txEdge.node.status}</Badge></TableCell>
-                            <TableCell>{txEdge.node.gateway}</TableCell>
-                            <TableCell className="text-right">{formatShopifyMoney(txEdge.node.amountSet)}</TableCell>
+                        {selectedOrder.transactions.map((transaction: ShopifyTransaction) => (
+                        <TableRow key={transaction.id}>
+                            <TableCell>{safeFormatDate(transaction.processedAt)}</TableCell>
+                            <TableCell>{transaction.kind}</TableCell>
+                            <TableCell><Badge variant={transaction.status === 'SUCCESS' ? 'default' : transaction.status === 'PENDING' ? 'secondary' : 'destructive'}>{transaction.status}</Badge></TableCell>
+                            <TableCell>{transaction.gateway}</TableCell>
+                            <TableCell className="text-right">{formatShopifyMoney(transaction.amountSet)}</TableCell>
                         </TableRow>
                         ))}
                     </TableBody>
@@ -305,3 +305,4 @@ export function ShopifySalesTable({ orders, isLoading, error: parentError }: Sho
     </div>
   );
 }
+
