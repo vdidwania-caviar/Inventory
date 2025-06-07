@@ -47,7 +47,7 @@ interface ShopifyGraphQLVariantEdge {
   node: ShopifyGraphQLVariantNode;
 }
 
-interface ShopifyGraphQLTransactionNode {
+interface ShopifyGraphQLTransaction { // Direct type for transaction node
   id: string;
   kind: string;
   status: string;
@@ -77,8 +77,8 @@ interface ShopifyGraphQLOrderNode {
     email?: string | null;
     phone?: string | null;
   } | null;
-  billingAddress?: any; 
-  shippingAddress?: any; 
+  billingAddress?: any;
+  shippingAddress?: any;
   currencyCode: string;
   totalPriceSet: { shopMoney: { amount: string; currencyCode: string } };
   subtotalPriceSet?: { shopMoney: { amount: string; currencyCode: string } } | null;
@@ -104,7 +104,7 @@ interface ShopifyGraphQLOrderNode {
         endCursor?: string | null;
     };
   };
-  transactions?: ShopifyGraphQLTransactionNode[];
+  transactions?: ShopifyGraphQLTransaction[]; // Changed to be a list of Transaction nodes
 }
 
 interface ShopifyGraphQLOrderEdge {
@@ -259,7 +259,7 @@ export async function fetchAndCacheShopifyOrders({
               }
               pageInfo { hasNextPage endCursor }
             }
-            transactions(first: 10) { 
+            transactions(first: 10) { # Shopify OrderTransaction is a list, not a connection
               id
               kind
               status
@@ -375,7 +375,7 @@ export async function fetchAndCacheShopifyOrders({
     };
 
   } catch (error: any) {
-    console.error('Shopify Order Service: CRITICAL ERROR in fetchAndCacheShopifyOrders:', error);
+    console.warn('Shopify Order Service: ERROR in fetchAndCacheShopifyOrders:', error); // Changed to console.warn
     details.push(`Error: ${error.message}`);
     return {
       success: false,
