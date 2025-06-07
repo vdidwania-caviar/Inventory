@@ -1,34 +1,30 @@
 
-
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { ShopifySalesTable } from '@/components/shopify/shopify-sales-table';
-import { fetchAndCacheShopifyOrders, getCachedShopifyOrders, getShopifyOrderSyncState } from '@/lib/shopify-order-service'; // Added getShopifyOrderSyncState
-import { getAdminAuth, admin } from '@/lib/firebase-admin'; // Use getAdminAuth
+import { fetchAndCacheShopifyOrders, getCachedShopifyOrders, getShopifyOrderSyncState } from '@/lib/shopify-order-service';
+import { getAdminAuth } from '@/lib/firebase-admin';
 import { cookies } from 'next/headers';
-import { redirect } from 'next/navigation';
 import { RefreshCw, AlertTriangle, ShoppingBag } from 'lucide-react';
 import Link from 'next/link';
 import type { ShopifyOrderCacheItem, ShopifyOrderSyncState } from '@/lib/types';
-import { Timestamp } from 'firebase-admin/firestore';
 
-
-const ADMIN_UID = "xxF5GLpy4KYuOvHgt7Yx4Ra3Bju2"; // Make sure this is your actual admin UID
+const ADMIN_UID = "xxF5GLpy4KYuOvHgt7Yx4Ra3Bju2";
 
 export default async function ShopifySalesPage({
   searchParams
 }: {
   searchParams?: { [key: string]: string | string[] | undefined }
 }) {
-  const cookiesList = await cookies();
+  const cookiesList = cookies(); // Await cookies
   const sessionCookie = cookiesList.get('__session')?.value;
 
   let isAdminUser = false;
   try {
     if (sessionCookie) {
-      const auth = getAdminAuth(); // Get auth instance
-      const decodedToken = await auth.verifySessionCookie(sessionCookie, true);
+      const auth = getAdminAuth();
+      const decodedToken = await auth.verifySessionCookie(sessionCookie, true); // First await
       if (decodedToken.uid === ADMIN_UID) {
         isAdminUser = true;
       }
@@ -39,16 +35,10 @@ export default async function ShopifySalesPage({
 
   if (!isAdminUser && process.env.NODE_ENV !== 'production') {
     console.warn("Shopify Sales Page: DEV MODE - Bypassing strict admin check for Shopify Sales page.");
-    // Allow access in dev for easier testing if admin check fails, but show warning
-    // isAdminUser = true; // Uncomment this line ONLY for temporary local testing if admin check is problematic
+    // isAdminUser = true; // Uncomment for local testing ONLY IF admin check is problematic
   }
-  
-  let actionResult: { success: boolean; message: string; details?: string[] } | null = null;
-  let initialOrders: ShopifyOrderCacheItem[] = [];
-  let initialError: string | null = null;
-  let syncState: ShopifyOrderSyncState | null = null;
 
-  // Read searchParams *after* initial async operations.
+  // Now, after the first await (admin check), we can access searchParams
   const action =
     typeof searchParams?.action === 'string'
       ? searchParams.action
@@ -56,50 +46,70 @@ export default async function ShopifySalesPage({
         ? searchParams.action[0]
         : undefined;
 
-  if (!isAdminUser && process.env.NODE_ENV === 'production' && action === 'refresh_orders') {
-    // If not admin in prod, and trying to refresh, block early
-    actionResult = { success: false, message: "Admin privileges required to refresh orders." };
-  } else if (!isAdminUser && process.env.NODE_ENV === 'production') {
-    // If not admin in prod and just viewing page, show access denied (or redirect)
-    return (
-      <div className="space-y-6 p-4">
-        <Alert variant="destructive">
-          <AlertTriangle className="h-4 w-4" />
-          <AlertTitle>Access Denied</AlertTitle>
-          <AlertDescription>
-            You do not have permission to view this page. Please log in as an administrator.
-          </AlertDescription>
-        </Alert>
-        <Button asChild variant="link">
-          <Link href="/login">Go to Login</Link>
-        </Button>
-      </div>
-    );
-  }
+  let actionResult: { success: boolean; message: string; details?: string[] } | null = null;
+  let initialOrders: ShopifyOrderCacheItem[] = [];
+  let initialError: string | null = null;
+  let syncState: ShopifyOrderSyncState | null = null;
 
-
-  if (action === 'refresh_orders' && (!actionResult || actionResult.success)) { // Proceed if not already blocked by admin check
-    // Check admin privileges again, especially if dev mode bypass was active
-    if (isAdminUser || (process.env.NODE_ENV !== 'production' && !isAdminUser /* implied dev bypass for action */)) {
-        console.log("ShopifySalesPage: 'refresh_orders' action triggered. Calling fetchAndCacheShopifyOrders without forceFullSync.");
-        const result = await fetchAndCacheShopifyOrders(); // Removed forceFullSync: true
-        actionResult = {
-            success: result.success,
-            message: result.error || `Fetched ${result.fetchedCount}, Cached ${result.cachedCount}, Deleted ${result.deletedCount} orders. Sync type: ${result.syncTypeUsed || 'N/A'}.`,
-            details: result.details
-        };
+  if (!isAdminUser && process.env.NODE_ENV === 'production') {
+    if (action === 'refresh_orders') {
+      actionResult = { success: false, message: "Admin privileges required to refresh orders." };
     } else {
-        // This case should ideally be caught by the earlier admin check for production
-        actionResult = { success: false, message: "Admin privileges required for refresh (strict mode)." };
+      // If not admin in prod and not trying to refresh, deny access.
+      return (
+        <div className="space-y-6 p-4">
+          <Alert variant="destructive">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>Access Denied</AlertTitle>
+            <AlertDescription>
+              You do not have permission to view this page. Please log in as an administrator.
+            </AlertDescription>
+          </Alert>
+          <Button asChild variant="link">
+            <Link href="/login">Go to Login</Link>
+          </Button>
+        </div>
+      );
     }
   }
 
-  try {
-    initialOrders = await getCachedShopifyOrders();
-    syncState = await getShopifyOrderSyncState();
-  } catch (e: any) {
-    initialError = e.message || "Failed to load initial Shopify orders from cache.";
+  // Process action if user is admin or in dev with bypass
+  if (action === 'refresh_orders' && (!actionResult || actionResult.success)) {
+    if (isAdminUser || (process.env.NODE_ENV !== 'production' && !isAdminUser)) {
+      console.log("ShopifySalesPage: 'refresh_orders' action triggered. Calling fetchAndCacheShopifyOrders.");
+      try {
+        const result = await fetchAndCacheShopifyOrders(); // Second potential await
+        actionResult = {
+          success: result.success,
+          message: result.error || `Fetched ${result.fetchedCount}, Cached ${result.cachedCount}, Deleted ${result.deletedCount} orders. Sync type: ${result.syncTypeUsed || 'N/A'}.`,
+          details: result.details
+        };
+      } catch (e: any) {
+        console.warn("ShopifySalesPage: Error during fetchAndCacheShopifyOrders action:", e);
+        actionResult = { success: false, message: e.message || "Failed to refresh Shopify orders.", details: e.details };
+        initialError = e.message || "Failed to refresh Shopify orders during action.";
+      }
+    } else if (!actionResult) { 
+      actionResult = { success: false, message: "Admin privileges required for refresh (strict mode)." };
+    }
   }
+
+  // Fetch initial data if not already blocked by access denied for action
+  if (!actionResult?.success && actionResult?.message.includes("Admin privileges required")) {
+    // If action was blocked due to admin rights, don't proceed to fetch initial data.
+    // The main access denied block for page view will handle non-admin viewing.
+  } else {
+    try {
+      initialOrders = await getCachedShopifyOrders(); // Third potential await
+      syncState = await getShopifyOrderSyncState();   // Fourth potential await
+    } catch (e: any) {
+      console.warn("ShopifySalesPage: Error fetching initial Shopify orders or sync state:", e);
+      if (!actionResult) { // Only set initialError if not already set by a failed action
+          initialError = e.message || "Failed to load initial Shopify orders from cache or sync state.";
+      }
+    }
+  }
+  
 
   const lastFullSyncTime = syncState?.lastFullOrderSyncCompletionTimestamp
     ? new Date(syncState.lastFullOrderSyncCompletionTimestamp).toLocaleString()
@@ -166,4 +176,3 @@ export default async function ShopifySalesPage({
     </div>
   );
 }
-
