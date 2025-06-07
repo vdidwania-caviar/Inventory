@@ -114,12 +114,10 @@ export function AddInvoiceForm() {
       const snapshot = await getDocs(customersQuery);
       const fetchedCustomers: Customer[] = snapshot.docs.map(docSnap => ({
         id: docSnap.id,
-        name: docSnap.data().CustomerName as string, // Use CustomerName
+        name: docSnap.data().CustomerName as string, 
         email: docSnap.data().Email as string | undefined,
-        // Map other fields as needed
       } as Customer));
       setCustomers(fetchedCustomers);
-      console.log("AddInvoiceForm: Fetched customers:", fetchedCustomers);
     } catch (error) {
       console.error("AddInvoiceForm: Error fetching customers:", error);
       toast({ variant: "destructive", title: "Error", description: "Could not load customers." });
@@ -138,7 +136,6 @@ export function AddInvoiceForm() {
       const snapshot = await getDocs(inventoryQuery);
       const items = snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() } as InventoryItem));
       setInventoryItems(items);
-      console.log("AddInvoiceForm: Fetched active inventory items for SKU selector:", items);
     } catch (error) {
       console.error("AddInvoiceForm: Error fetching inventory items:", error);
       toast({ variant: "destructive", title: "Error", description: "Could not load inventory items for SKU selection." });
@@ -158,9 +155,9 @@ export function AddInvoiceForm() {
     }
     setIsAddingCustomer(true);
     try {
-      const customerData: Partial<Customer> & { CustomerName: string } = { // Ensure CustomerName is part of the type
-        CustomerName: newCustomerName.trim(), // Save as CustomerName
-        name: newCustomerName.trim(), // Keep name for local state compatibility if needed
+      const customerData: Partial<Customer> & { CustomerName: string } = {
+        CustomerName: newCustomerName.trim(),
+        name: newCustomerName.trim(),
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
@@ -214,6 +211,9 @@ export function AddInvoiceForm() {
       toast({ variant: "destructive", title: "Error", description: "Invoice Number is missing." });
       return;
     }
+    
+    const batch = writeBatch(db);
+
     try {
       const subtotalCalc = values.items.reduce((acc, item) => acc + (item.itemQuantity || 0) * (item.itemPricePerUnit || 0), 0);
       const taxAmountCalc = values.taxAmount || 0;
@@ -230,46 +230,48 @@ export function AddInvoiceForm() {
         subtotal: parseFloat(subtotalCalc.toFixed(2)),
         taxAmount: parseFloat(taxAmountCalc.toFixed(2)),
         totalAmount: parseFloat(totalAmountCalc.toFixed(2)),
-        totalAllocatedPayment: 0,
-        totalBalance: parseFloat(totalAmountCalc.toFixed(2)),
+        totalAllocatedPayment: 0, // New invoices start with 0 paid
+        totalBalance: parseFloat(totalAmountCalc.toFixed(2)), // Balance is full amount
+        channel: 'Manual', // Manually created invoice
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       };
+      
+      const invoiceCollectionRef = collection(db, 'invoices');
+      const newInvoiceDocRef = doc(invoiceCollectionRef); // Generate a new doc ref for the invoice
+      batch.set(newInvoiceDocRef, invoiceDataToSave);
 
-      const invoiceDocRef = await addDoc(collection(db, 'invoices'), invoiceDataToSave);
-      const invoiceFirestoreId = invoiceDocRef.id;
-
-      const batch = writeBatch(db);
       const salesCollectionRef = collection(db, 'sales');
-
       for (const item of invoiceDataToSave.items) {
         const lineItemTotal = (item.itemQuantity || 0) * (item.itemPricePerUnit || 0);
+        // Create a Sale document for each line item
         const saleData: Omit<Sale, 'id' | 'items'> & { items?: any[] } = { 
-          invoiceId: invoiceFirestoreId,
+          invoiceId: newInvoiceDocRef.id, // Link to the new Firestore invoice ID
           Invoice: invoiceDataToSave.invoiceNumber, 
           Customer: invoiceDataToSave.customerName,
           customerId: invoiceDataToSave.customerId,
-          Date: invoiceDataToSave.invoiceDate.toDate().toISOString(),
+          Date: invoiceDataToSave.invoiceDate.toDate().toISOString(), // Use invoice date
           Item: item.itemName,
           SKU: item.itemSku,
           Quantity: item.itemQuantity,
           Price: lineItemTotal, 
-          Revenue: lineItemTotal, 
-          Tax: 0, 
-          Taxable: false, 
-          allocated_payment: 0,
-          Balance: lineItemTotal,
-          channel: 'Invoice',
+          Revenue: lineItemTotal, // Assuming revenue is the same as price for manual entries
+          Tax: 0, // Assuming no item-specific tax here, overall tax is on invoice
+          Taxable: false, // Default, can be adjusted if item-level tax needed
+          allocated_payment: 0, // Line item payment allocation starts at 0
+          Balance: lineItemTotal, // Line item balance starts at full amount
+          channel: 'Manual', // Source of this sale line item
           notes: item.itemNotes,
           createdAt: serverTimestamp() as any,
           updatedAt: serverTimestamp() as any,
         };
-        delete saleData.items; 
+        delete saleData.items; // Ensure 'items' field from Sale type doesn't conflict if it exists
 
-        const newSaleDocRef = doc(salesCollectionRef);
+        const newSaleDocRef = doc(salesCollectionRef); // Create a new doc ref for the sale
         batch.set(newSaleDocRef, saleData);
       }
-      await batch.commit();
+      
+      await batch.commit(); // Commit all batched writes (invoice + sales)
 
       toast({
         title: 'Invoice Created',

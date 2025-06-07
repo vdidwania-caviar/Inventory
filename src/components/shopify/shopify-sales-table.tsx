@@ -34,7 +34,7 @@ function safeFormatDate(dateString?: string | null): string {
   }
 }
 
-// Accounting style money format, no USD or $ prefix
+// Format money as accounting style (no $ or USD)
 function formatShopifyMoney(moneySet?: { shopMoney: { amount: string } } | null): string {
   if (!moneySet || !moneySet.shopMoney) return 'N/A';
   const amount = parseFloat(moneySet.shopMoney.amount);
@@ -43,22 +43,32 @@ function formatShopifyMoney(moneySet?: { shopMoney: { amount: string } } | null)
     : amount.toLocaleString(undefined, { style: 'decimal', minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+// FORMAT ORDER NUMBER as SH-1075 (strip leading '2' for 5-digit numbers)
+function formatOrderNumber(orderName?: string): string {
+  if (!orderName) return 'N/A';
+  const name = orderName.replace(/^#/, '');
+  // e.g., "21075" -> "1075"
+  if (/^2\d{4}$/.test(name)) {
+    return `SH-${name.slice(1)}`;
+  }
+  // fallback: just use what remains
+  return `SH-${name}`;
+}
+
+// Get Shopify admin order URL
+function getShopifyOrderUrl(order: ShopifyOrderCacheItem) {
+  const orderId = order.id?.split('/').pop();
+  return orderId
+    ? `https://admin.shopify.com/store/caviar-and-chevre/orders/${orderId}`
+    : '#';
+}
+
 type SortKey = 'name' | 'createdAt' | 'totalPriceSet';
 type SortDirection = 'ascending' | 'descending';
 
 interface SortConfig {
   key: SortKey;
   direction: SortDirection;
-}
-
-// Get Shopify admin order URL
-function getShopifyOrderUrl(order: ShopifyOrderCacheItem) {
-  // If using Shopify Plus, use the plus domain
-  // Otherwise, use the admin.shopify.com format
-  const orderId = order.id?.split('/').pop();
-  return orderId
-    ? `https://admin.shopify.com/store/caviar-and-chevre/orders/${orderId}`
-    : '#';
 }
 
 export function ShopifySalesTable({ orders, isLoading, error: parentError }: ShopifySalesTableProps) {
@@ -194,11 +204,7 @@ export function ShopifySalesTable({ orders, isLoading, error: parentError }: Sho
           </TableHeader>
           <TableBody className="bg-background divide-y divide-border">
             {sortedOrders.length > 0 ? sortedOrders.map((order) => {
-              // Order number formatting
-              let orderNumber = order.name
-                ? `SH-${order.name.replace(/^#/, '')}`
-                : 'N/A';
-
+              const orderNumber = formatOrderNumber(order.name);
               const shopifyOrderUrl = getShopifyOrderUrl(order);
 
               return (
@@ -266,7 +272,7 @@ export function ShopifySalesTable({ orders, isLoading, error: parentError }: Sho
           <DialogContent className="sm:max-w-2xl md:max-w-3xl lg:max-w-4xl max-h-[80vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle>
-                Order Details: SH-{selectedOrder.name?.replace(/^#/, '')}
+                Order Details: {formatOrderNumber(selectedOrder.name)}
                 <a
                   href={getShopifyOrderUrl(selectedOrder)}
                   target="_blank"
@@ -277,7 +283,7 @@ export function ShopifySalesTable({ orders, isLoading, error: parentError }: Sho
                 </a>
               </DialogTitle>
               <DialogDescription>
-                Full details for Shopify Order SH-{selectedOrder.name?.replace(/^#/, '')}, created at {safeFormatDate(selectedOrder.createdAt)}.
+                Full details for Shopify Order {formatOrderNumber(selectedOrder.name)}, created at {safeFormatDate(selectedOrder.createdAt)}.
               </DialogDescription>
             </DialogHeader>
             <div className="grid gap-4 py-4 text-sm">

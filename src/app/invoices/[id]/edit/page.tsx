@@ -57,15 +57,14 @@ export default function EditInvoicePage() {
   const fetchCustomers = useCallback(async () => {
     setIsLoadingCustomers(true);
     try {
-      const customersQuery = query(collection(db, 'customers'), firestoreOrderBy('CustomerName')); // Order by CustomerName
+      const customersQuery = query(collection(db, 'customers'), firestoreOrderBy('CustomerName'));
       const snapshot = await getDocs(customersQuery);
       const fetchedCustomers = snapshot.docs.map(docSnap => ({
          id: docSnap.id,
-         name: docSnap.data().CustomerName as string, // Use CustomerName
+         name: docSnap.data().CustomerName as string, 
          email: docSnap.data().Email as string | undefined,
       } as Customer));
       setCustomers(fetchedCustomers);
-      console.log("EditInvoicePage: Fetched customers:", fetchedCustomers);
     } catch (error) { 
       console.error("EditInvoicePage: Error fetching customers:", error);
       toast({ variant: "destructive", title: "Error", description: "Could not load customers." }); 
@@ -82,7 +81,6 @@ export default function EditInvoicePage() {
       const snapshot = await getDocs(inventoryQuery);
       const items = snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() } as InventoryItem));
       setInventoryItems(items);
-      console.log("EditInvoicePage: Fetched active inventory items for SKU selector:", items);
     } catch (error) {
       console.error("EditInvoicePage: Error fetching inventory items:", error);
       toast({ variant: "destructive", title: "Error", description: "Could not load inventory items for SKU selection." });
@@ -172,9 +170,9 @@ export default function EditInvoicePage() {
     if (!newCustomerName.trim()) return toast({ variant: "destructive", title: "Error", description: "Customer name cannot be empty." });
     setIsAddingCustomer(true);
     try {
-      const customerData: Partial<Customer> & { CustomerName: string } = { // Ensure CustomerName is part of the type
-        CustomerName: newCustomerName.trim(), // Save as CustomerName
-        name: newCustomerName.trim(), // Keep name for local state compatibility if needed
+      const customerData: Partial<Customer> & { CustomerName: string } = { 
+        CustomerName: newCustomerName.trim(), 
+        name: newCustomerName.trim(), 
         createdAt: new Date().toISOString(), 
         updatedAt: new Date().toISOString()
       };
@@ -199,8 +197,12 @@ export default function EditInvoicePage() {
 
     if (!invoiceId) return setSubmitError("Invoice ID missing.");
     setSubmitError(null);
+    
+    const batch = writeBatch(db);
+
     try {
-      const existingInvoiceSnap = await getDoc(doc(db, 'invoices', invoiceId));
+      const invoiceDocRef = doc(db, 'invoices', invoiceId);
+      const existingInvoiceSnap = await getDoc(invoiceDocRef); // Get fresh doc, not from transaction
       if(!existingInvoiceSnap.exists()) throw new Error("Original invoice not found for update.");
       const existingInvoiceData = existingInvoiceSnap.data() as InvoiceType;
 
@@ -220,33 +222,47 @@ export default function EditInvoicePage() {
         totalAllocatedPayment: totalAllocatedPaymentCurrent,
         totalBalance: parseFloat((totalAmountCalc - totalAllocatedPaymentCurrent).toFixed(2)),
         updatedAt: serverTimestamp(),
+        // channel will remain what it was (e.g., 'Shopify' or 'Manual')
       };
+      
+      batch.update(invoiceDocRef, invoiceDataToUpdate);
 
-      const batch = writeBatch(db);
-      batch.update(doc(db, 'invoices', invoiceId), invoiceDataToUpdate);
-
+      // Delete existing Sale records for this invoice
       const salesQuery = query(collection(db, 'sales'), where("invoiceId", "==", invoiceId));
-      const existingSaleDocsSnap = await getDocs(salesQuery);
+      const existingSaleDocsSnap = await getDocs(salesQuery); // Regular getDocs, not transaction.get
       existingSaleDocsSnap.forEach(docSnap => batch.delete(docSnap.ref));
 
+      // Create new Sale records from updated invoice items
       const salesCollectionRef = collection(db, 'sales');
       for (const item of invoiceDataToUpdate.items) {
         const lineItemTotal = (item.itemQuantity || 0) * (item.itemPricePerUnit || 0);
         const saleData: Omit<Sale, 'id' | 'items'> & { items?: any[] } = {
-          invoiceId: invoiceId, Invoice: invoiceDataToUpdate.invoiceNumber,
-          Customer: invoiceDataToUpdate.customerName, customerId: invoiceDataToUpdate.customerId,
-          Date: invoiceDataToUpdate.invoiceDate.toDate().toISOString(), Item: item.itemName, SKU: item.itemSku,
-          Quantity: item.itemQuantity, Price: lineItemTotal, Revenue: lineItemTotal,
-          allocated_payment: 0, Balance: lineItemTotal, 
-          channel: 'Invoice', notes: item.itemNotes,
-          createdAt: invoiceDataToUpdate.updatedAt, updatedAt: invoiceDataToUpdate.updatedAt,
+          invoiceId: invoiceId, 
+          Invoice: invoiceDataToUpdate.invoiceNumber,
+          Customer: invoiceDataToUpdate.customerName, 
+          customerId: invoiceDataToUpdate.customerId,
+          Date: invoiceDataToUpdate.invoiceDate.toDate().toISOString(), 
+          Item: item.itemName, 
+          SKU: item.itemSku,
+          Quantity: item.itemQuantity, 
+          Price: lineItemTotal, 
+          Revenue: lineItemTotal,
+          Tax: 0, 
+          Taxable: false, 
+          allocated_payment: 0, // Assuming payment allocation per line item is complex and handled elsewhere or not needed for 'sales' records
+          Balance: lineItemTotal, 
+          channel: existingInvoiceData.channel || 'Manual', // Preserve original channel or default
+          notes: item.itemNotes,
+          createdAt: invoiceDataToUpdate.updatedAt, // Should ideally be the invoice's original createdAt if available, or now
+          updatedAt: invoiceDataToUpdate.updatedAt,
         };
         delete saleData.items;
         const newSaleDocRef = doc(salesCollectionRef);
         batch.set(newSaleDocRef, saleData);
       }
+      
       await batch.commit();
-      toast({ title: 'Invoice Updated', description: `Invoice #${values.invoiceNumber} updated.` });
+      toast({ title: 'Invoice Updated', description: `Invoice #${values.invoiceNumber} and associated sales records updated.` });
       router.push(`/invoices/${invoiceId}`);
     } catch (error: any) {
       setSubmitError(error?.message || 'Failed to update invoice.');
