@@ -25,8 +25,8 @@ interface ShopifyGraphQLOrdersResponse {
 
 const ORDER_SYNC_STATE_DOC_ID = 'shopifyOrdersSyncState';
 const SHOPIFY_ORDER_CACHE_COLLECTION = 'shopifyOrderCache';
-const DEFAULT_ORDERS_PER_PAGE = 25; // Adjusted for potentially larger order objects
-const MAX_BATCH_OPERATIONS = 450; // Firestore batch limit (keep a margin)
+const DEFAULT_ORDERS_PER_PAGE = 25;
+const MAX_BATCH_OPERATIONS = 450;
 
 export async function getShopifyOrderSyncState(): Promise<ShopifyOrderSyncState | null> {
   const adminDb = getAdminDb();
@@ -92,10 +92,7 @@ interface FetchAndCacheResult {
 
 export async function fetchAndCacheShopifyOrders({
   forceFullSync = false,
-  limit = 0, // 0 means no limit for fetching from Shopify
-}: {
-  forceFullSync?: boolean;
-  limit?: number;
+  limit = 0, 
 } = {}): Promise<FetchAndCacheResult> {
   const adminDb = getAdminDb();
   console.log(`Shopify Order Service: Starting fetchAndCacheShopifyOrders. ForceFullSync: ${forceFullSync}, Limit: ${limit}`);
@@ -162,16 +159,16 @@ export async function fetchAndCacheShopifyOrders({
             totalTaxSet { shopMoney { amount currencyCode } }
             totalDiscountsSet { shopMoney { amount currencyCode } }
             totalRefundedSet { shopMoney { amount currencyCode } }
-            lineItems(first: 50) { # Increased line items fetch
+            lineItems(first: 50) {
               edges {
                 node {
                   id title variantTitle quantity sku vendor
-                  originalTotalSet { shopMoney { amount currencyCode } } # Used for per-unit price calculation
-                  discountedTotalSet { shopMoney { amount currencyCode } } # Used for line item total
+                  originalTotalSet { shopMoney { amount currencyCode } } 
+                  discountedTotalSet { shopMoney { amount currencyCode } } 
                 }
               }
             }
-            transactions(first: 10) { # Fetching as a list
+            transactions { 
               id kind status gateway processedAt errorCode
               amountSet { shopMoney { amount currencyCode } }
             }
@@ -233,11 +230,10 @@ export async function fetchAndCacheShopifyOrders({
     resultSummary.details?.push(`Firestore cache: ${cacheResult.countAddedOrUpdated} orders added/updated, ${cacheResult.countDeleted} deleted.`);
     console.log(`Shopify Order Service: Cache update complete. Added/Updated: ${cacheResult.countAddedOrUpdated}, Deleted: ${cacheResult.countDeleted}`);
 
-    // --- Create Invoices and Sales from Shopify Orders ---
     let currentBatch = adminDb.batch();
     let operationsInBatch = 0;
 
-    for (const shopifyOrder of allFetchedOrders) { // Process all fetched orders to ensure new ones create invoices
+    for (const shopifyOrder of allFetchedOrders) {
         if (!shopifyOrder.id || !shopifyOrder.name) {
             console.warn(`Shopify Order Service: Shopify order missing ID or name, skipping invoice creation. Data: ${JSON.stringify(shopifyOrder)}`);
             resultSummary.details?.push(`Skipped invoice creation for Shopify order due to missing ID/name.`);
@@ -253,11 +249,10 @@ export async function fetchAndCacheShopifyOrders({
             continue;
         }
 
-        // Customer Handling
         let firestoreCustomerId: string | undefined;
         let firestoreCustomerName: string = shopifyOrder.customer?.email || shopifyOrder.email || 'Unknown Customer';
 
-        if (shopifyOrder.customer?.id) { // Shopify Customer GID
+        if (shopifyOrder.customer?.id) { 
             const shopifyCustomerGid = shopifyOrder.customer.id;
             const customerQuery = adminDb.collection('customers').where('shopifyCustomerId', '==', shopifyCustomerGid).limit(1);
             const existingCustomerSnap = await customerQuery.get();
@@ -284,7 +279,6 @@ export async function fetchAndCacheShopifyOrders({
             firestoreCustomerName = `${shopifyOrder.customer.firstName || ''} ${shopifyOrder.customer.lastName || ''}`.trim() || shopifyOrder.email || 'Shopify Customer (no GID)';
         }
 
-
         const invoiceItems: InvoiceItem[] = shopifyOrder.lineItems.edges.map(edge => {
             const node = edge.node;
             const quantity = node.quantity || 0;
@@ -300,18 +294,23 @@ export async function fetchAndCacheShopifyOrders({
         });
 
         const totalAmount = parseFloat(shopifyOrder.totalPriceSet.shopMoney.amount);
+        
+        // Format invoice number: Remove leading "#" and any "X. " prefix
+        const coreOrderNumber = shopifyOrder.name.replace(/^#/, '').replace(/^[0-9]+\.\s*/, '');
+        const formattedInvoiceNumber = `SH-${coreOrderNumber}`;
+
         const newInvoiceData: Omit<Invoice, 'id'> = {
-            invoiceNumber: shopifyOrder.name, // e.g., #1001
+            invoiceNumber: formattedInvoiceNumber,
             shopifyOrderId: shopifyOrder.id,
-            invoiceDate: shopifyOrder.processedAt || shopifyOrder.createdAt, // ISO strings
+            invoiceDate: shopifyOrder.processedAt || shopifyOrder.createdAt, 
             customerName: firestoreCustomerName,
             customerId: firestoreCustomerId,
             items: invoiceItems,
             subtotal: parseFloat(shopifyOrder.subtotalPriceSet?.shopMoney.amount || '0'),
             taxAmount: parseFloat(shopifyOrder.totalTaxSet?.shopMoney.amount || '0'),
             totalAmount: totalAmount,
-            invoiceStatus: 'Paid', // Assume paid for Shopify orders
-            totalAllocatedPayment: totalAmount, // Assume fully paid
+            invoiceStatus: 'Paid', 
+            totalAllocatedPayment: totalAmount, 
             totalBalance: 0,
             channel: 'Shopify',
             createdAt: FieldValue.serverTimestamp() as unknown as string,
@@ -324,19 +323,19 @@ export async function fetchAndCacheShopifyOrders({
 
         for (const item of newInvoiceData.items) {
             const newSaleRef = adminDb.collection('sales').doc();
-            const saleData: Omit<Sale, 'id'|'items'|'totalAmount'> = { // totalAmount in Sale type refers to overall sale, here Price refers to line item
+            const saleData: Omit<Sale, 'id'|'items'|'totalAmount'> = { 
                 invoiceId: newInvoiceRef.id,
                 Invoice: newInvoiceData.invoiceNumber,
                 Customer: newInvoiceData.customerName,
                 customerId: newInvoiceData.customerId,
-                Date: newInvoiceData.invoiceDate, // Already ISO string
+                Date: newInvoiceData.invoiceDate, 
                 Item: item.itemName,
                 SKU: item.itemSku,
                 Quantity: item.itemQuantity,
-                Price: item.lineItemTotal, // This is the line item's total value
-                Revenue: item.lineItemTotal, // Assuming price = revenue for this step
+                Price: item.lineItemTotal, 
+                Revenue: item.lineItemTotal, 
                 channel: 'Shopify',
-                allocated_payment: item.lineItemTotal, // Line item is fully paid as part of the invoice
+                allocated_payment: item.lineItemTotal, 
                 Balance: 0,
                 createdAt: FieldValue.serverTimestamp() as unknown as string,
                 updatedAt: FieldValue.serverTimestamp() as unknown as string,
@@ -345,7 +344,7 @@ export async function fetchAndCacheShopifyOrders({
             resultSummary.salesItemsCreated++;
         }
 
-        if (operationsInBatch >= MAX_BATCH_OPERATIONS - 10) { // Keep some buffer for customer + invoice + many sales items
+        if (operationsInBatch >= MAX_BATCH_OPERATIONS - 10) { 
             await currentBatch.commit();
             currentBatch = adminDb.batch();
             operationsInBatch = 0;
@@ -357,15 +356,13 @@ export async function fetchAndCacheShopifyOrders({
         await currentBatch.commit();
         console.log("Shopify Order Service: Committed final batch for invoices/sales.");
     }
-    // --- End Create Invoices and Sales ---
 
     const newSyncStateUpdate: Partial<ShopifyOrderSyncState> = { lastOrderSyncTimestamp: currentSyncOperationStartedAt };
-    if (effectiveSyncType === 'full' && !hasNextPage) { // Only update full sync completion if ALL pages were fetched
+    if (effectiveSyncType === 'full' && !hasNextPage) { 
       newSyncStateUpdate.lastFullOrderSyncCompletionTimestamp = new Date().toISOString();
-      newSyncStateUpdate.lastOrderEndCursor = null; // Reset cursor on full completion
+      newSyncStateUpdate.lastOrderEndCursor = null; 
       console.log(`Shopify Order Service: Full sync completed successfully. Resetting end cursor and updated lastFullOrderSyncCompletionTimestamp.`);
     } else if (effectiveSyncType === 'delta' || (effectiveSyncType === 'full' && hasNextPage)) {
-      // For delta, or incomplete full sync, save the last cursor
       newSyncStateUpdate.lastOrderEndCursor = currentCursor || null;
     }
     await updateShopifyOrderSyncState(newSyncStateUpdate);
@@ -377,7 +374,7 @@ export async function fetchAndCacheShopifyOrders({
     console.warn('Shopify Order Service: CRITICAL ERROR in fetchAndCacheShopifyOrders:', error);
     resultSummary.details?.push(`Error: ${error.message || String(error)}`);
     resultSummary.error = error.message || String(error);
-    resultSummary.success = false; // Ensure success is false on error
+    resultSummary.success = false; 
   }
 
   console.log("Shopify Order Service: Final Result Summary:", resultSummary);
@@ -440,7 +437,6 @@ export async function updateShopifyOrderCacheInFirestore(
         const numericId = order.id.split('/').pop();
         if (numericId) {
           const docRef = cacheCollectionRef.doc(numericId);
-          // Ensure undefined fields are handled for Firestore
           const orderDataForFirestore = JSON.parse(JSON.stringify(order, (key, value) => value === undefined ? FieldValue.delete() : value));
           batch.set(docRef, orderDataForFirestore, { merge: true });
           opsInBatch++;
@@ -464,7 +460,7 @@ export async function updateShopifyOrderCacheInFirestore(
 
   } catch (error) {
     console.warn("Shopify Order Service: Error updating Firestore cache:", error);
-    throw error; // Re-throw to be caught by the caller
+    throw error; 
   }
 
   return { countAddedOrUpdated, countDeleted };
@@ -476,8 +472,8 @@ export async function getCachedShopifyOrders(): Promise<ShopifyOrderCacheItem[]>
     console.log("Shopify Order Service: Fetching cached Shopify orders from Firestore (limit 250, ordered by createdAt desc).");
     const snapshot = await adminDb
       .collection(SHOPIFY_ORDER_CACHE_COLLECTION)
-      .orderBy('createdAt', 'desc') // Ensure 'createdAt' is a valid ISO string or Timestamp for ordering
-      .limit(250) // Consider making limit configurable or removing for full display
+      .orderBy('createdAt', 'desc') 
+      .limit(250) 
       .get();
     if (!snapshot.empty) {
       const results = snapshot.docs.map(doc => doc.data() as ShopifyOrderCacheItem);
@@ -488,10 +484,136 @@ export async function getCachedShopifyOrders(): Promise<ShopifyOrderCacheItem[]>
     return [];
   } catch (error) {
     console.warn("Shopify Order Service: Error fetching cached Shopify orders:", error);
-    // If the error is about a missing index, log specific advice
     if (error instanceof Error && error.message.includes("indexes?create_composite")) {
         console.error("Firestore index missing for 'shopifyOrderCache' collection. Please create a composite index for 'createdAt' (descending). Check the Firestore console or the link in the error message.");
     }
-    throw error; // Re-throw to be caught by the caller
+    throw error; 
   }
+}
+
+// --- Retroactive Sales to Invoice Migration (NEW) ---
+export async function migrateExistingSalesToInvoices() {
+  const adminDb = getAdminDb();
+  const salesRef = adminDb.collection('sales');
+  const invoicesRef = adminDb.collection('invoices');
+  let batch = adminDb.batch();
+  let operationsInBatch = 0;
+  const MAX_OPS = 450;
+
+  const summary = {
+    salesProcessed: 0,
+    invoicesCreated: 0,
+    salesUpdatedWithInvoiceId: 0,
+    errors: [] as string[],
+    details: [] as string[],
+  };
+
+  try {
+    summary.details.push("Starting migration of existing 'sales' records to 'invoices'.");
+    const salesSnapshot = await salesRef.get();
+    summary.salesProcessed = salesSnapshot.docs.length;
+    summary.details.push(`Found ${summary.salesProcessed} sales records to process.`);
+
+    if (salesSnapshot.empty) {
+      summary.details.push("No sales records found. Migration not needed.");
+      return summary;
+    }
+
+    const salesByInvoiceNumber = new Map<string, Sale[]>();
+
+    // Group sales by their `Invoice` field (Shopify Order #)
+    salesSnapshot.docs.forEach(doc => {
+      const sale = { id: doc.id, ...doc.data() } as Sale;
+      if (sale.Invoice && !sale.invoiceId) { // Process only if Invoice # exists and not already linked to a Firestore invoice
+        const salesGroup = salesByInvoiceNumber.get(sale.Invoice) || [];
+        salesGroup.push(sale);
+        salesByInvoiceNumber.set(sale.Invoice, salesGroup);
+      }
+    });
+
+    summary.details.push(`Grouped sales into ${salesByInvoiceNumber.size} potential invoices.`);
+
+    for (const [invoiceNum, salesGroup] of salesByInvoiceNumber.entries()) {
+      if (!invoiceNum.startsWith('SH-')) { // Skip if not a Shopify-like invoice number, or adjust as needed
+        summary.details.push(`Skipping invoice number "${invoiceNum}" as it doesn't appear to be a Shopify order number (missing SH- prefix).`);
+        continue;
+      }
+
+      const existingInvoiceQuery = await invoicesRef.where('invoiceNumber', '==', invoiceNum).limit(1).get();
+      if (!existingInvoiceQuery.empty) {
+        summary.details.push(`Invoice ${invoiceNum} already exists. Skipping creation.`);
+        // Optionally, still update sales items with the existing invoiceId
+        const existingInvoiceId = existingInvoiceQuery.docs[0].id;
+        for (const sale of salesGroup) {
+            if(!sale.invoiceId) { // Only update if not already linked
+                batch.update(salesRef.doc(sale.id), { invoiceId: existingInvoiceId, updatedAt: FieldValue.serverTimestamp() });
+                operationsInBatch++;
+                summary.salesUpdatedWithInvoiceId++;
+                if (operationsInBatch >= MAX_OPS) { await batch.commit(); batch = adminDb.batch(); operationsInBatch = 0; }
+            }
+        }
+        continue;
+      }
+
+      const firstSale = salesGroup[0];
+      const invoiceItems: InvoiceItem[] = salesGroup.map(s => ({
+        itemName: s.Item || 'Unknown Item',
+        itemSku: s.SKU || undefined,
+        itemQuantity: s.Quantity || 0,
+        itemPricePerUnit: (s.Price && s.Quantity && s.Quantity > 0) ? parseFloat((s.Price / s.Quantity).toFixed(2)) : (s.Price || 0),
+        lineItemTotal: s.Price || 0,
+        itemNotes: s.notes || undefined,
+      }));
+
+      const subtotal = invoiceItems.reduce((acc, item) => acc + (item.lineItemTotal || 0), 0);
+      // Assuming no tax info in old sales records for simplicity, or try to derive if possible
+      const taxAmount = 0; 
+      const totalAmount = subtotal + taxAmount;
+
+      const newInvoiceData: Omit<Invoice, 'id'> = {
+        invoiceNumber: invoiceNum,
+        invoiceDate: firstSale.Date || new Date().toISOString(), // Use sale date or fallback
+        customerName: firstSale.Customer || 'Unknown Customer',
+        customerId: firstSale.customerId || undefined,
+        items: invoiceItems,
+        subtotal: parseFloat(subtotal.toFixed(2)),
+        taxAmount: parseFloat(taxAmount.toFixed(2)),
+        totalAmount: parseFloat(totalAmount.toFixed(2)),
+        invoiceStatus: 'Paid', // Assume paid for past sales
+        totalAllocatedPayment: parseFloat(totalAmount.toFixed(2)),
+        totalBalance: 0,
+        channel: 'Shopify', // Assuming these are from Shopify
+        createdAt: firstSale.createdAt || FieldValue.serverTimestamp() as any,
+        updatedAt: FieldValue.serverTimestamp() as any,
+        // shopifyOrderId might be missing if not in old sales data.
+      };
+
+      const newInvoiceRef = invoicesRef.doc();
+      batch.set(newInvoiceRef, newInvoiceData);
+      operationsInBatch++;
+      summary.invoicesCreated++;
+      summary.details.push(`Staged new invoice ${invoiceNum} with ID ${newInvoiceRef.id}.`);
+
+      // Update sales items with the new invoiceId
+      for (const sale of salesGroup) {
+        batch.update(salesRef.doc(sale.id), { invoiceId: newInvoiceRef.id, updatedAt: FieldValue.serverTimestamp() });
+        operationsInBatch++;
+        summary.salesUpdatedWithInvoiceId++;
+        if (operationsInBatch >= MAX_OPS) { await batch.commit(); batch = adminDb.batch(); operationsInBatch = 0; }
+      }
+       if (operationsInBatch >= MAX_OPS) { await batch.commit(); batch = adminDb.batch(); operationsInBatch = 0; }
+    }
+
+    if (operationsInBatch > 0) {
+      await batch.commit();
+      summary.details.push("Committed final batch of migration operations.");
+    }
+    summary.details.push("Migration process finished.");
+
+  } catch (error: any) {
+    console.error("Error during sales to invoice migration:", error);
+    summary.errors.push(`Migration failed: ${error.message}`);
+    summary.details.push(`Migration failed: ${error.message}`);
+  }
+  return summary;
 }
