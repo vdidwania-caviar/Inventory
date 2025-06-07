@@ -240,12 +240,25 @@ export async function fetchAndCacheShopifyOrders({
             continue;
         }
 
+        // Refined Invoice Number Formatting
+        let tempOrderName = shopifyOrder.name;
+        // Remove potential "SH-" prefix if Shopify order.name already includes it (e.g., from manual entry or other systems)
+        if (tempOrderName.toUpperCase().startsWith('SH-')) {
+            tempOrderName = tempOrderName.substring(3);
+        }
+        // Remove common prefixes like "X. ", "X-", "X_ ", or "#"
+        // This regex targets: one or more digits, followed by a dot/hyphen/underscore/space, then optional more spaces OR just a leading hash.
+        tempOrderName = tempOrderName.replace(/^[0-9]+[.\-_ ]\s*|^#/, '');
+        const coreOrderNumber = tempOrderName; // The remainder should be the core number
+        const formattedInvoiceNumber = `SH-${coreOrderNumber}`;
+
+
         const invoiceQuery = adminDb.collection('invoices').where('shopifyOrderId', '==', shopifyOrder.id);
         const existingInvoiceSnap = await invoiceQuery.limit(1).get();
 
         if (!existingInvoiceSnap.empty) {
             console.log(`Shopify Order Service: Invoice already exists for Shopify Order GID ${shopifyOrder.id} (Order #: ${shopifyOrder.name}). Skipping.`);
-            resultSummary.details?.push(`Invoice for Shopify Order ${shopifyOrder.name} already exists.`);
+            resultSummary.details?.push(`Invoice for Shopify Order ${shopifyOrder.name} (Invoice #: ${formattedInvoiceNumber}) already exists.`);
             continue;
         }
 
@@ -295,10 +308,6 @@ export async function fetchAndCacheShopifyOrders({
 
         const totalAmount = parseFloat(shopifyOrder.totalPriceSet.shopMoney.amount);
         
-        // Format invoice number: Remove leading "#" and any "X. " prefix
-        const coreOrderNumber = shopifyOrder.name.replace(/^#/, '').replace(/^[0-9]+\.\s*/, '');
-        const formattedInvoiceNumber = `SH-${coreOrderNumber}`;
-
         const newInvoiceData: Omit<Invoice, 'id'> = {
             invoiceNumber: formattedInvoiceNumber,
             shopifyOrderId: shopifyOrder.id,
