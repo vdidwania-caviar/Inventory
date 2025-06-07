@@ -9,8 +9,6 @@ function initializeAdminApp(): admin.app.App {
   if (admin.apps.length) {
     const existingApp = admin.app();
     console.log(`Firebase Admin SDK: App already initialized. Name: ${existingApp.name}. Project ID from existing app: ${existingApp.options.projectId}`);
-    // If the existing app doesn't have a projectId and we have one from env, this indicates a potential issue.
-    // However, re-initializing can be problematic. For now, just log and use existing.
     if (!existingApp.options.projectId && projectIdFromEnv) {
         console.warn(`Firebase Admin SDK: Existing app was initialized without a projectId, but NEXT_PUBLIC_FIREBASE_PROJECT_ID (${projectIdFromEnv}) is available. This might lead to issues if the ADC didn't pick up the project correctly initially.`);
     }
@@ -58,7 +56,7 @@ try {
 
 const getAdminDb = (): admin.firestore.Firestore => {
   if (!adminAppInstance || !adminAppInstance.name) {
-    console.error("Firebase Admin SDK: App not properly initialized or initialization failed. Cannot get Firestore service.");
+    console.warn("Firebase Admin SDK: App not properly initialized or initialization failed. Cannot get Firestore service.");
     throw new Error("Firebase Admin App is not available. Cannot access Firestore service.");
   }
   return adminAppInstance.firestore();
@@ -66,7 +64,7 @@ const getAdminDb = (): admin.firestore.Firestore => {
 
 const getAdminAuth = (): admin.auth.Auth => {
   if (!adminAppInstance || !adminAppInstance.name) {
-    console.error("Firebase Admin SDK: App not properly initialized or initialization failed. Cannot get Auth service.");
+    console.warn("Firebase Admin SDK: App not properly initialized or initialization failed. Cannot get Auth service.");
     throw new Error("Firebase Admin App is not available. Cannot access Auth service.");
   }
   return adminAppInstance.auth();
@@ -74,7 +72,7 @@ const getAdminAuth = (): admin.auth.Auth => {
 
 const getAdminStorage = (): admin.storage.Storage => {
   if (!adminAppInstance || !adminAppInstance.name) {
-    console.error("Firebase Admin SDK: App not properly initialized or initialization failed. Cannot get Storage service.");
+    console.warn("Firebase Admin SDK: App not properly initialized or initialization failed. Cannot get Storage service.");
     throw new Error("Firebase Admin App is not available. Cannot access Storage service.");
   }
   return adminAppInstance.storage();

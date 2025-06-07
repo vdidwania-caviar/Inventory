@@ -47,11 +47,11 @@ interface ShopifyGraphQLVariantEdge {
   node: ShopifyGraphQLVariantNode;
 }
 
-interface ShopifyGraphQLTransactionNode { // This is what a single transaction from the list will look like
+interface ShopifyGraphQLTransactionNode {
   id: string;
   kind: string;
   status: string;
-  amountSet: { shopMoney: { amount: string; currencyCode: string } }; // Matches ShopifyMoneySet
+  amountSet: { shopMoney: { amount: string; currencyCode: string } };
   gateway?: string | null;
   processedAt?: string;
   errorCode?: string | null;
@@ -77,8 +77,8 @@ interface ShopifyGraphQLOrderNode {
     email?: string | null;
     phone?: string | null;
   } | null;
-  billingAddress?: any; // Define more strictly if needed
-  shippingAddress?: any; // Define more strictly if needed
+  billingAddress?: any; 
+  shippingAddress?: any; 
   currencyCode: string;
   totalPriceSet: { shopMoney: { amount: string; currencyCode: string } };
   subtotalPriceSet?: { shopMoney: { amount: string; currencyCode: string } } | null;
@@ -104,7 +104,7 @@ interface ShopifyGraphQLOrderNode {
         endCursor?: string | null;
     };
   };
-  transactions?: ShopifyGraphQLTransactionNode[]; // Changed: Now a direct list
+  transactions?: ShopifyGraphQLTransactionNode[];
 }
 
 interface ShopifyGraphQLOrderEdge {
@@ -148,7 +148,7 @@ async function getShopifyOrderSyncState(): Promise<ShopifyOrderSyncState | null>
     console.log("Shopify Order Service: Sync state document does not exist, will perform full sync.");
     return null;
   } catch (error) {
-    console.error("Shopify Order Service: Error fetching sync state:", error);
+    console.warn("Shopify Order Service: Error fetching sync state:", error);
     throw new Error(`Failed to fetch order sync state: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
@@ -169,14 +169,14 @@ async function updateShopifyOrderSyncState(newState: Partial<ShopifyOrderSyncSta
     await syncStateRef.set(updateData, { merge: true });
     console.log("Shopify Order Service: Sync state updated:", newState);
   } catch (error) {
-    console.error("Shopify Order Service: Error updating sync state:", error);
+    console.warn("Shopify Order Service: Error updating sync state:", error);
     throw new Error(`Failed to update order sync state: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
 export async function fetchAndCacheShopifyOrders({
   forceFullSync = false,
-  limit = 0, // 0 means fetch all based on pagination
+  limit = 0, 
 }: {
   forceFullSync?: boolean;
   limit?: number;
@@ -213,12 +213,11 @@ export async function fetchAndCacheShopifyOrders({
     queryFilter = `updated_at:>'${syncState.lastOrderSyncTimestamp}'`;
     details.push(`Performing delta sync. Fetching orders updated after: ${syncState.lastOrderSyncTimestamp}`);
   } else {
-    effectiveSyncType = 'full'; // Fallback to full sync if delta conditions aren't met
+    effectiveSyncType = 'full'; 
     details.push(`Performing full sync. Reason: ${forceFullSync ? 'forced' : !syncState?.lastFullOrderSyncCompletionTimestamp ? 'no previous full sync' : 'delta conditions not met'}.`);
   }
   const currentSyncOperationStartedAt = new Date().toISOString();
 
-  // GraphQL query for orders
   const ordersQuery = `
     query GetOrders($first: Int!, $after: String, $sortKey: OrderSortKeys, $reverse: Boolean, $query: String) {
       orders(first: $first, after: $after, sortKey: $sortKey, reverse: $reverse, query: $query) {
@@ -260,7 +259,7 @@ export async function fetchAndCacheShopifyOrders({
               }
               pageInfo { hasNextPage endCursor }
             }
-            transactions(first: 5) { # Corrected: transactions is a list
+            transactions(first: 10) { 
               id
               kind
               status
@@ -322,7 +321,6 @@ export async function fetchAndCacheShopifyOrders({
 
       edges.forEach(edge => {
         const orderNode = edge.node;
-        // Transform ShopifyGraphQLOrderNode to ShopifyOrder
         const shopifyOrder: ShopifyOrder = {
           ...orderNode,
           customer: orderNode.customer || undefined,
@@ -337,12 +335,11 @@ export async function fetchAndCacheShopifyOrders({
               }
             }))
           },
-          // Correctly map transactions if it's a direct list
           transactions: orderNode.transactions?.map(tx => ({
             id: tx.id,
             kind: tx.kind,
             status: tx.status,
-            amountSet: tx.amountSet, // Assuming ShopifyMoneySet type matches
+            amountSet: tx.amountSet, 
             gateway: tx.gateway,
             processedAt: tx.processedAt,
             errorCode: tx.errorCode,
@@ -356,11 +353,9 @@ export async function fetchAndCacheShopifyOrders({
       currentCursor = pageInfo.endCursor;
     }
 
-    // Update Firestore cache
     const cacheResult = await updateShopifyOrderCacheInFirestore(allFetchedOrders, effectiveSyncType === 'full');
     details.push(`Firestore cache: ${cacheResult.countAddedOrUpdated} orders added/updated, ${cacheResult.countDeleted} deleted.`);
 
-    // Update sync state
     const newSyncStateUpdate: Partial<ShopifyOrderSyncState> = {
       lastOrderSyncTimestamp: currentSyncOperationStartedAt, 
       lastOrderEndCursor: currentCursor, 
@@ -410,7 +405,7 @@ export async function updateShopifyOrderCacheInFirestore(
       if (numericId) newOrderNumericIds.add(numericId);
     });
 
-    const existingCacheSnapshot = await cacheCollectionRef.select().get(); // Select only IDs
+    const existingCacheSnapshot = await cacheCollectionRef.select().get(); 
     const staleDocIds: string[] = [];
     existingCacheSnapshot.forEach(doc => {
       if (!newOrderNumericIds.has(doc.id)) {
@@ -435,7 +430,6 @@ export async function updateShopifyOrderCacheInFirestore(
       const numericId = order.id.split('/').pop();
       if (numericId) {
         const docRef = cacheCollectionRef.doc(numericId);
-        // Ensure all Timestamps are converted if they exist from a previous fetch that wasn't stringified
         const orderDataForFirestore = JSON.parse(JSON.stringify(order));
         batch.set(docRef, orderDataForFirestore);
         countAddedOrUpdated++;
@@ -451,12 +445,10 @@ export async function updateShopifyOrderCacheInFirestore(
 export async function getCachedShopifyOrders(): Promise<ShopifyOrderCacheItem[]> {
     const adminDb = getAdminDb();
     try {
-        const snapshot = await adminDb.collection(SHOPIFY_ORDER_CACHE_COLLECTION).orderBy('createdAt', 'desc').limit(250).get(); // Simple sort for now
+        const snapshot = await adminDb.collection(SHOPIFY_ORDER_CACHE_COLLECTION).orderBy('createdAt', 'desc').limit(250).get(); 
         return snapshot.docs.map(doc => doc.data() as ShopifyOrderCacheItem);
     } catch (error) {
-        console.error("Shopify Order Service: Error fetching cached Shopify orders:", error);
-        return [];
+        console.warn("Shopify Order Service: Error fetching cached Shopify orders:", error); 
+        throw error;
     }
 }
-
-    
