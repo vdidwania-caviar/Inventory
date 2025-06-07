@@ -578,7 +578,7 @@ export async function migrateExistingSalesToInvoices(): Promise<FetchAndCacheRes
           itemQuantity: s.Quantity || 0,
           itemPricePerUnit: (s.Price && s.Quantity && s.Quantity > 0) ? parseFloat((s.Price / s.Quantity).toFixed(2)) : (s.Price || 0),
           lineItemTotal: s.Price || 0,
-          itemNotes: s.notes || undefined,
+ itemNotes: s.notes || null,
         }));
 
         const subtotal = invoiceItems.reduce((acc, item) => acc + (item.lineItemTotal || 0), 0);
@@ -588,7 +588,7 @@ export async function migrateExistingSalesToInvoices(): Promise<FetchAndCacheRes
 
         const newInvoiceData: Omit<Invoice, 'id'> = {
           invoiceNumber: formattedFirestoreInvoiceId,
-          shopifyOrderId: firstSale.ID || undefined, 
+ shopifyOrderId: firstSale.ID || null,
           invoiceDate: firstSale.Date || new Date().toISOString(), 
           customerName: firstSale.Customer || 'Unknown Customer',
           customerId: firstSale.customerId || firstSale.customer_ID || undefined,
